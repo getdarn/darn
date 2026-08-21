@@ -1,0 +1,26 @@
+[package]
+name = "darn"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "SSH-based fleet patching CLI"
+authors = ["Martin Maisey"]
+
+[dependencies]
+base64 = "0.22"
+chrono = "0.4"
+hmac = "0.12"
+sha1 = "0.10"
+clap = { version = "4", features = ["derive"] }
+comfy-table = { version = "7", features = ["custom_styling"] }
+console = "0.15"
+dirs = "5"
+indicatif = "0.17"
+regex = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+ssh2 = { version = "0.9", features = ["vendored-openssl"] }
+thiserror = "1"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"

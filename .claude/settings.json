@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//home/martin/darn3/src/darn3/**)",
+      "Read(//home/martin/darn3/tests/**)",
+      "Bash(cargo --version)",
+      "Bash(cc --version)",
+      "Bash(pkg-config --exists libssl)"
+    ]
+  }
+}
