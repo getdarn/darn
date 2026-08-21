@@ -1,6 +1,6 @@
 use chrono::{DateTime, Local};
 use comfy_table::presets::UTF8_FULL;
-use comfy_table::{ContentArrangement, Table};
+use comfy_table::{ContentArrangement, Table, TableComponent};
 use console::style;
 use rusqlite::Connection;
 
@@ -106,6 +106,11 @@ fn new_table() -> Table {
     table
         .load_preset(UTF8_FULL)
         .set_content_arrangement(ContentArrangement::Dynamic);
+    // No separator lines between rows, like rich's default table.
+    table.remove_style(TableComponent::HorizontalLines);
+    table.remove_style(TableComponent::MiddleIntersections);
+    table.remove_style(TableComponent::LeftBorderIntersections);
+    table.remove_style(TableComponent::RightBorderIntersections);
     table
 }
 
