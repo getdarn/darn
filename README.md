@@ -1,6 +1,6 @@
 # darn
 
-SSH-based fleet patching CLI — a Rust port of [darn3](https://github.com/mmaisey/darn3).
+SSH-based fleet patching CLI.
 
 darn keeps a list of hosts in a local SQLite database, connects to them in
 parallel over SSH with your own credentials, discovers pending package
@@ -89,3 +89,7 @@ cargo clippy
 The parsers (apt simulate output, needrestart, dnf check-update /
 updateinfo, RouterOS) and the restart-verdict precedence ladders are pure
 functions with the darn3 test suite ported alongside them.
+
+## License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE.txt](LICENSE.txt).
