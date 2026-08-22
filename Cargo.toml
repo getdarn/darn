@@ -2,9 +2,19 @@
 name = "darn"
 version = "0.1.0"
 edition = "2021"
+# 1.88 is the floor: comfy-table uses let-chains and declares no rust-version
+# of its own, so this has to be verified by building rather than read off the
+# dependency manifests (the msrv job in ci.yml does exactly that).
+rust-version = "1.88"
 license = "Apache-2.0"
 description = "SSH-based fleet patching CLI"
 authors = ["Martin Maisey"]
+homepage = "https://github.com/getdarn/darn"
+repository = "https://github.com/getdarn/darn"
+readme = "README.md"
+keywords = ["ssh", "patching", "sysadmin", "fleet", "automation"]
+categories = ["command-line-utilities"]
+exclude = ["/.github", "/.claude", "/dist"]
 
 [dependencies]
 base64 = "0.22"
@@ -13,6 +23,7 @@ hmac = "0.12"
 sha1 = "0.10"
 clap = { version = "4", features = ["derive"] }
 clap_complete = { version = "4.6", features = ["unstable-dynamic"] }
+clap_mangen = "0.2"
 comfy-table = { version = "7", features = ["custom_styling"] }
 console = "0.15"
 dirs = "5"
@@ -25,3 +36,54 @@ uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 tempfile = "3"
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
+
+# Packaging metadata. Both cargo-deb and cargo-generate-rpm are pure Rust and
+# write the archives themselves, so neither needs dpkg or rpmbuild present —
+# they run inside whichever build container produced the binary.
+#
+# The man page and completion files under dist/ are generated during the build
+# (see .github/workflows/release.yml); they are not checked in, because the
+# completion scripts bake in the absolute path of the binary that emitted them.
+
+[package.metadata.deb]
+maintainer = "Martin Maisey <martin@maisey.co.uk>"
+copyright = "2026, Martin Maisey"
+license-file = ["LICENSE.txt", "0"]
+section = "admin"
+priority = "optional"
+extended-description = """
+darn keeps a list of hosts in a local SQLite database, connects to them in
+parallel over SSH with your own credentials, discovers pending package
+updates, applies them, reboots hosts that need it, and restarts services left
+running against upgraded libraries. Every remote command's stdout, stderr and
+exit code is logged to the database.
+Supported host types: Debian/Ubuntu (apt), RedHat-family (dnf/yum), and
+Mikrotik RouterOS."""
+# Stated explicitly rather than via $auto: OpenSSL, SQLite and libssh2 are all
+# statically vendored, so the full runtime dependency set is libc and zlib.
+# This also lets cargo-deb run outside a Debian environment (no dpkg-shlibdeps).
+depends = "libc6 (>= 2.28), zlib1g"
+assets = [
+    ["target/release/darn", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/darn/README.md", "644"],
+    ["dist/darn.1", "usr/share/man/man1/darn.1", "644"],
+    ["dist/completions/darn.bash", "usr/share/bash-completion/completions/darn", "644"],
+    ["dist/completions/darn.fish", "usr/share/fish/vendor_completions.d/darn.fish", "644"],
+    ["dist/completions/_darn", "usr/share/zsh/vendor-completions/_darn", "644"],
+]
+
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/darn", dest = "/usr/bin/darn", mode = "755" },
+    { source = "LICENSE.txt", dest = "/usr/share/licenses/darn/LICENSE.txt", mode = "644", doc = true },
+    { source = "README.md", dest = "/usr/share/doc/darn/README.md", mode = "644", doc = true },
+    { source = "dist/darn.1", dest = "/usr/share/man/man1/darn.1", mode = "644", doc = true },
+    { source = "dist/completions/darn.bash", dest = "/usr/share/bash-completion/completions/darn", mode = "644" },
+    { source = "dist/completions/darn.fish", dest = "/usr/share/fish/vendor_completions.d/darn.fish", mode = "644" },
+    { source = "dist/completions/_darn", dest = "/usr/share/zsh/site-functions/_darn", mode = "644" },
+]

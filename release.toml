@@ -1,0 +1,19 @@
+# cargo-release configuration. Cutting a release is:
+#
+#     cargo release 0.2.0
+#
+# which bumps Cargo.toml, updates the README install snippets, commits, tags
+# and pushes. The tag fires .github/workflows/release.yml, which does all the
+# building and publishing.
+
+tag-prefix = ""
+tag-name = "v{{version}}"
+sign-tag = true
+publish = false           # release.yml runs cargo publish, after the artifacts build
+push = true
+
+pre-release-replacements = [
+  { file = "README.md", search = "darn/[0-9]+\\.[0-9]+\\.[0-9]+/", replace = "darn/{{version}}/", min = 0 },
+  { file = "README.md", search = "darn:[0-9]+\\.[0-9]+\\.[0-9]+", replace = "darn:{{version}}", min = 0 },
+  { file = "README.md", search = "darn-[0-9]+\\.[0-9]+\\.[0-9]+-", replace = "darn-{{version}}-", min = 0 },
+]

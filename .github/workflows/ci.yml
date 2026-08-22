@@ -1,0 +1,137 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  test:
+    name: test (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # Caching matters more than usual here: OpenSSL and SQLite are vendored C
+      # builds that dominate a cold compile.
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked --all-targets
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --locked --all-targets
+      # No `cargo fmt --check` yet: the existing sources predate rustfmt and
+      # currently produce a diff across ~10 files, so enabling it here would
+      # fail on the first run. Run `cargo fmt --all` as its own commit, then
+      # add `components: rustfmt` above and a `cargo fmt --all --check` step.
+
+  msrv:
+    name: msrv (rust-version in Cargo.toml)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: msrv
+        run: echo "version=$(sed -n 's/^rust-version *= *"\(.*\)"/\1/p' Cargo.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --locked --all-targets
+
+  # Builds the packages the way release.yml does and installs them on the
+  # oldest distros we claim to support. This is what catches a glibc floor
+  # regression and a completion script pointing at a build directory.
+  package-smoke:
+    runs-on: ubuntu-latest
+    container: quay.io/pypa/manylinux_2_28_x86_64
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-deb cargo-generate-rpm --locked
+      - run: cargo build --release --locked
+      - run: ci/gen-dist.sh /usr/bin/darn dist
+      - run: cargo deb --no-build --no-strip
+      - run: cargo generate-rpm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: smoke-packages
+          path: |
+            target/debian/*.deb
+            target/generate-rpm/*.rpm
+
+  package-install:
+    needs: package-smoke
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: debian:11
+            kind: deb
+          - image: debian:12
+            kind: deb
+          - image: ubuntu:20.04
+            kind: deb
+          - image: rockylinux:8
+            kind: rpm
+          - image: almalinux:9
+            kind: rpm
+          - image: fedora:latest
+            kind: rpm
+    runs-on: ubuntu-latest
+    container: ${{ matrix.image }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: smoke-packages
+      - name: Install and verify
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if [ "${{ matrix.kind }}" = deb ]; then
+            apt-get update -qq
+            apt-get install -y --no-install-recommends ./debian/*.deb
+          else
+            rpm -i ./generate-rpm/*.rpm
+          fi
+
+          # Runs at all -> the glibc floor is low enough for this distro.
+          darn --version
+          darn --help > /dev/null
+          test -f /usr/share/man/man1/darn.1*
+
+          # The completion script must point at the installed binary, not at
+          # whatever path the package was built in.
+          comp=/usr/share/bash-completion/completions/darn
+          grep -q '"/usr/bin/darn"' "$comp"
+          ! grep -q 'target/release' "$comp"
+
+          # And it must actually complete: with no database present darn stays
+          # silent and exits cleanly rather than erroring.
+          COMPLETE=bash darn > /dev/null

@@ -11,7 +11,65 @@ exit code is logged to the database.
 Supported host types: Debian/Ubuntu (`apt`), RedHat-family (`dnf`/`yum`), and
 Mikrotik RouterOS.
 
-## Building
+## Installing
+
+### Debian, Ubuntu and derivatives
+
+```sh
+curl -1sLf https://dl.cloudsmith.io/public/getdarn/darn/setup.deb.sh | sudo -E bash
+sudo apt install darn
+```
+
+### RHEL, Alma, Rocky, Fedora
+
+```sh
+curl -1sLf https://dl.cloudsmith.io/public/getdarn/darn/setup.rpm.sh | sudo -E bash
+sudo dnf install darn
+```
+
+Packages are built against glibc 2.28, so they work on RHEL-family 8 and
+later, Debian 11 and later, and Ubuntu 20.04 and later.
+
+### Static tarball
+
+Needs no glibc at all — useful for older or unusual distributions.
+
+```sh
+curl -LO https://github.com/getdarn/darn/releases/latest/download/darn-0.1.0-x86_64-linux-musl.tar.gz
+tar xzf darn-0.1.0-x86_64-linux-musl.tar.gz
+sudo install -m755 darn-0.1.0-x86_64-linux-musl/darn /usr/local/bin/darn
+```
+
+Every release also ships `SHA256SUMS` and build provenance attestations, so a
+download can be verified with `sha256sum -c` and `gh attestation verify`.
+
+### With cargo
+
+```sh
+cargo install darn
+```
+
+### Docker
+
+```sh
+docker run --rm -it \
+  -v ~/.ssh:/home/darn/.ssh:ro \
+  -v ~/.local/share/darn:/home/darn/.local/share/darn \
+  -v "$SSH_AUTH_SOCK:/ssh-agent" -e SSH_AUTH_SOCK=/ssh-agent \
+  -e USER="$USER" \
+  ghcr.io/getdarn/darn:latest status
+```
+
+Three of those flags are load-bearing. `-t` keeps the progress bars working.
+`USER` is what darn uses as the SSH username for targets added without an
+explicit `user@`, and it defaults to `root` when unset. Mounting the data
+directory is what makes the database survive the container.
+
+The image is Alpine-based and includes `ssh`, so you can accept a new host key
+from inside it, and `bash`, so `docker exec -it <container> bash` gets working
+tab-completion.
+
+### Building from source
 
 ```sh
 cargo build --release

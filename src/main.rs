@@ -152,6 +152,10 @@ enum Command {
         #[arg(value_name = "SHELL", value_parser = shell_values())]
         shell: String,
     },
+
+    /// Print the roff man page, for packaging to capture as darn.1.
+    #[command(hide = true)]
+    Man,
 }
 
 /// The shells the completion engine can register with, taken from the engine
@@ -279,6 +283,7 @@ fn run(cli: Cli) -> Result<i32, DarnError> {
         Command::Log { hostname } => commands::log::run(db, &hostname),
         Command::Status { plain, show_all } => commands::status::run(db, plain, show_all),
         Command::Completions { shell } => commands::completions::run(&shell),
+        Command::Man => commands::man::run(Cli::command()),
     }
 }
 

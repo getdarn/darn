@@ -1,5 +1,6 @@
 pub mod completions;
 pub mod log;
+pub mod man;
 pub mod reboot;
 pub mod restartservices;
 pub mod server;
