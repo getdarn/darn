@@ -160,7 +160,7 @@ impl<'a> SshSession<'a> {
 // Dropping the ssh2 Session sends a disconnect and swallows errors, which is
 // what we want: the peer may already be gone — e.g. we just rebooted it.
 
-fn known_hosts_files() -> Vec<PathBuf> {
+pub(crate) fn known_hosts_files() -> Vec<PathBuf> {
     let mut files = Vec::new();
     if let Some(home) = dirs::home_dir() {
         files.push(home.join(".ssh").join("known_hosts"));
@@ -329,7 +329,7 @@ fn hashed_entry_matches(pattern: &str, hostname: &str) -> bool {
 }
 
 /// OpenSSH-style host pattern match: `*` and `?` wildcards, case-insensitive.
-fn glob_match(pattern: &str, host: &str) -> bool {
+pub(crate) fn glob_match(pattern: &str, host: &str) -> bool {
     fn inner(p: &[u8], h: &[u8]) -> bool {
         match (p.first(), h.first()) {
             (None, None) => true,

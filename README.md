@@ -34,6 +34,36 @@ darn restartservices all              # bounce services running stale libraries
 darn log web-01                       # full output of the last session
 ```
 
+## Shell completion
+
+Completion covers subcommands and flags, and completes hostnames from your own
+database — so `darn upgrade <TAB>` offers `all` plus the hosts you manage, and
+`darn server add <TAB>` also offers the hosts in `~/.ssh/config` and
+`~/.ssh/known_hosts`. Add one line to your shell's startup file:
+
+```sh
+# ~/.bashrc
+source <(COMPLETE=bash darn)
+
+# ~/.zshrc
+source <(COMPLETE=zsh darn)
+
+# ~/.config/fish/config.fish
+COMPLETE=fish darn | source
+```
+
+`darn completions SHELL` prints the same script if you would rather install it
+as a file (`bash`, `elvish`, `fish`, `powershell`, `zsh`):
+
+```sh
+darn completions bash > /etc/bash_completion.d/darn
+darn completions fish > ~/.config/fish/completions/darn.fish
+```
+
+The script calls darn itself to work out the candidates, so regenerate a saved
+copy after upgrading darn. Completion reads the database without creating or
+modifying it, and stays silent if there is no database yet.
+
 ## Commands
 
 - `darn server add [USER@]HOSTNAME[:PORT] [--port N] [--key PATH] [--no-all|--all]`
@@ -54,6 +84,7 @@ darn log web-01                       # full output of the last session
 - `darn log HOSTNAME` — the recorded commands from the most recent session.
 - `darn status [--plain] [--all]` — offline view of pending work; `--plain`
   is stable, script-friendly text.
+- `darn completions SHELL` — print the shell completion script (see above).
 
 Exit codes: 0 on success, 1 when a command or any host failed, 2 on usage
 errors.

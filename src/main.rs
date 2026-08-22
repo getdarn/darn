@@ -1,4 +1,5 @@
 mod commands;
+mod complete;
 mod db;
 mod errors;
 mod hosts;
@@ -11,7 +12,8 @@ mod target;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
+use clap_complete::engine::{ArgValueCandidates, ArgValueCompleter, PathCompleter};
 
 use crate::errors::DarnError;
 
@@ -20,7 +22,12 @@ use crate::errors::DarnError;
 #[command(name = "darn", version, about = "darn — SSH-based fleet patching CLI.")]
 struct Cli {
     /// Override SQLite database path.
-    #[arg(long = "db", value_name = "PATH", global = true)]
+    #[arg(
+        long = "db",
+        value_name = "PATH",
+        global = true,
+        add = ArgValueCompleter::new(PathCompleter::file())
+    )]
     db: Option<PathBuf>,
 
     #[command(subcommand)]
@@ -45,6 +52,7 @@ enum Command {
     /// 'all' skips hosts marked --no-all unless --include-no-all is given;
     /// naming such a host directly always works.
     Upgrade {
+        #[arg(add = ArgValueCandidates::new(complete::targets))]
         target: String,
         /// Maximum number of hosts to work on in parallel.
         #[arg(short, long, default_value_t = 10)]
@@ -67,6 +75,7 @@ enum Command {
     /// whose state could not be determined. Hosts marked --no-all are left
     /// out unless --include-no-all is given; naming one directly always works.
     Reboot {
+        #[arg(add = ArgValueCandidates::new(complete::targets))]
         target: String,
         /// Maximum number of hosts to reboot concurrently.
         #[arg(short, long, default_value_t = 1)]
@@ -98,6 +107,7 @@ enum Command {
     /// restart are marked deferred and stop being counted as outstanding
     /// work — pass --force to restart them directly anyway.
     Restartservices {
+        #[arg(add = ArgValueCandidates::new(complete::targets))]
         target: String,
         /// Maximum number of hosts to work on in parallel.
         #[arg(short, long, default_value_t = 10)]
@@ -114,7 +124,10 @@ enum Command {
     },
 
     /// Show the output of the last commands run on a host.
-    Log { hostname: String },
+    Log {
+        #[arg(add = ArgValueCandidates::new(complete::hostnames))]
+        hostname: String,
+    },
 
     /// Show pending patches, reboots and service restarts.
     ///
@@ -129,6 +142,23 @@ enum Command {
         #[arg(long = "all")]
         show_all: bool,
     },
+
+    /// Print the shell completion script for SHELL.
+    ///
+    /// Either source it directly — `source <(darn completions bash)` — or save
+    /// it where your shell looks for completions. `COMPLETE=bash darn` prints
+    /// the same script. Regenerate it after upgrading darn.
+    Completions {
+        #[arg(value_name = "SHELL", value_parser = shell_values())]
+        shell: String,
+    },
+}
+
+/// The shells the completion engine can register with, taken from the engine
+/// itself so the accepted values cannot drift from what it supports.
+fn shell_values() -> clap::builder::PossibleValuesParser {
+    let shells = clap_complete::env::Shells::builtins();
+    clap::builder::PossibleValuesParser::new(shells.names().collect::<Vec<_>>())
 }
 
 #[derive(Subcommand)]
@@ -139,21 +169,32 @@ enum ServerCommand {
     /// `:port` suffix — without a user the current local user is used, and
     /// without a port 22 is used.
     Add {
-        #[arg(value_name = "[USER@]HOSTNAME[:PORT]")]
+        #[arg(
+            value_name = "[USER@]HOSTNAME[:PORT]",
+            add = ArgValueCandidates::new(complete::new_targets)
+        )]
         target: String,
         /// SSH port on the managed host.  [default: 22]
         #[arg(short, long)]
         port: Option<u16>,
         /// Path to an SSH private key. Defaults to agent / ~/.ssh/id_*.
-        #[arg(long = "key", value_name = "PATH")]
+        #[arg(
+            long = "key",
+            value_name = "PATH",
+            add = ArgValueCompleter::new(PathCompleter::file())
+        )]
         key_path: Option<String>,
         #[command(flatten)]
         no_all: NoAllFlag,
     },
     /// Remove a server from the managed list.
-    Remove { hostname: String },
+    Remove {
+        #[arg(add = ArgValueCandidates::new(complete::hostnames))]
+        hostname: String,
+    },
     /// Change the settings of an already-added server.
     Set {
+        #[arg(add = ArgValueCandidates::new(complete::hostnames))]
         hostname: String,
         #[command(flatten)]
         no_all: NoAllFlag,
@@ -237,10 +278,15 @@ fn run(cli: Cli) -> Result<i32, DarnError> {
         } => commands::restartservices::run(db, &target, jobs, yes, force, include_no_all),
         Command::Log { hostname } => commands::log::run(db, &hostname),
         Command::Status { plain, show_all } => commands::status::run(db, plain, show_all),
+        Command::Completions { shell } => commands::completions::run(&shell),
     }
 }
 
 fn main() -> ExitCode {
+    // Answers the shell's completion callback and exits; a no-op otherwise.
+    // Must come before anything that could write to stdout.
+    clap_complete::CompleteEnv::with_factory(Cli::command).complete();
+
     let cli = Cli::parse();
     match run(cli) {
         Ok(code) => ExitCode::from(code as u8),

@@ -1,3 +1,4 @@
+pub mod completions;
 pub mod log;
 pub mod reboot;
 pub mod restartservices;
