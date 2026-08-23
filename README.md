@@ -84,6 +84,7 @@ darn upgrade all                      # apply patches everywhere
 darn reboot all                       # reboot the hosts flagged as needing it
 darn restartservices all              # bounce services running stale libraries
 darn log web-01                       # full output of the last session
+darn shell web-01                     # interactive SSH session on a managed host
 ```
 
 ## Shell completion
@@ -134,6 +135,10 @@ modifying it, and stays silent if there is no database yet.
   host's own restart policy is honoured; declined units are marked deferred,
   and `--force` bypasses the policy.
 - `darn log HOSTNAME` — the recorded commands from the most recent session.
+- `darn shell HOSTNAME` — drop into an interactive session on a managed host,
+  using the stored user, port and key. This one hands the terminal to `ssh(1)`,
+  so ssh must be on PATH and your `~/.ssh/config` applies; the session is not
+  recorded.
 - `darn status [--plain] [--all]` — offline view of pending work; `--plain`
   is stable, script-friendly text.
 - `darn completions SHELL` — print the shell completion script (see above).

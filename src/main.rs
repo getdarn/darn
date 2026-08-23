@@ -123,6 +123,16 @@ enum Command {
         include_no_all: bool,
     },
 
+    /// Open an interactive SSH shell on HOSTNAME.
+    ///
+    /// Connects with the user, port and key stored for the host and hands the
+    /// terminal to ssh(1), so ssh must be on PATH. Nothing about the session
+    /// is recorded.
+    Shell {
+        #[arg(add = ArgValueCandidates::new(complete::hostnames))]
+        hostname: String,
+    },
+
     /// Show the output of the last commands run on a host.
     Log {
         #[arg(add = ArgValueCandidates::new(complete::hostnames))]
@@ -280,6 +290,7 @@ fn run(cli: Cli) -> Result<i32, DarnError> {
             force,
             include_no_all,
         } => commands::restartservices::run(db, &target, jobs, yes, force, include_no_all),
+        Command::Shell { hostname } => commands::shell::run(db, &hostname),
         Command::Log { hostname } => commands::log::run(db, &hostname),
         Command::Status { plain, show_all } => commands::status::run(db, plain, show_all),
         Command::Completions { shell } => commands::completions::run(&shell),

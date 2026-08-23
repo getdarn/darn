@@ -4,6 +4,7 @@ pub mod man;
 pub mod reboot;
 pub mod restartservices;
 pub mod server;
+pub mod shell;
 pub mod status;
 pub mod update;
 pub mod upgrade;
