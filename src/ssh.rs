@@ -104,8 +104,17 @@ impl<'a> SshSession<'a> {
         Ok(sess)
     }
 
-    pub fn run(&mut self, command: &str, sudo: bool, check: bool) -> Result<CommandResult, DarnError> {
-        let full_cmd = if sudo { self.with_sudo(command) } else { command.to_string() };
+    pub fn run(
+        &mut self,
+        command: &str,
+        sudo: bool,
+        check: bool,
+    ) -> Result<CommandResult, DarnError> {
+        let full_cmd = if sudo {
+            self.with_sudo(command)
+        } else {
+            command.to_string()
+        };
 
         let exec = || -> Result<(String, String, i32), String> {
             let mut ch = self.sess.channel_session().map_err(|e| e.to_string())?;
@@ -128,8 +137,8 @@ impl<'a> SshSession<'a> {
                 code,
             ))
         };
-        let (stdout, stderr, exit_code) = exec()
-            .map_err(|e| DarnError::Ssh(format!("command failed to execute: {e}")))?;
+        let (stdout, stderr, exit_code) =
+            exec().map_err(|e| DarnError::Ssh(format!("command failed to execute: {e}")))?;
 
         if let Some(recorder) = &self.recorder {
             recorder(&full_cmd, &stdout, &stderr, exit_code as i64);
@@ -305,12 +314,7 @@ fn hashed_entry_matches(pattern: &str, hostname: &str) -> bool {
     use base64::Engine;
     use hmac::{Hmac, Mac};
     let mut parts = pattern.splitn(4, '|');
-    let (_, magic, salt_b64, hash_b64) = (
-        parts.next(),
-        parts.next(),
-        parts.next(),
-        parts.next(),
-    );
+    let (_, magic, salt_b64, hash_b64) = (parts.next(), parts.next(), parts.next(), parts.next());
     if magic != Some("1") {
         return false;
     }
@@ -425,7 +429,10 @@ example.com ssh-ed25519 AAAAkey1 comment
 other.com ssh-rsa AAAAkey2
 [example.com]:2222 ecdsa-sha2-nistp256 AAAAkey3
 ";
-        assert_eq!(stored_key_types(content, "example.com", 22), ["ssh-ed25519"]);
+        assert_eq!(
+            stored_key_types(content, "example.com", 22),
+            ["ssh-ed25519"]
+        );
         assert_eq!(
             stored_key_types(content, "example.com", 2222),
             ["ecdsa-sha2-nistp256"]
@@ -465,7 +472,10 @@ example.com 1024 35 1234567890
 |1|AAECAwQFBgcICQoLDA0ODxAREhM=|nnUK16ANsXd3hL31YfAkGOluSjU= ssh-ed25519 AAAAkey
 |1|AAECAwQFBgcICQoLDA0ODxAREhM=|Wgcx+Fm+LmaWwC7rQ80eIf2uHe0= ssh-rsa AAAAkey2
 ";
-        assert_eq!(stored_key_types(content, "example.com", 22), ["ssh-ed25519"]);
+        assert_eq!(
+            stored_key_types(content, "example.com", 22),
+            ["ssh-ed25519"]
+        );
         assert_eq!(stored_key_types(content, "example.com", 2222), ["ssh-rsa"]);
         assert!(stored_key_types(content, "other.com", 22).is_empty());
     }

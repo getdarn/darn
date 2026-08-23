@@ -39,7 +39,11 @@ pub fn run(db_path: Option<&Path>, jobs: usize) -> Result<i32, DarnError> {
                 green(&body)
             };
             Ok(coloured
-                + &restart_suffix(thread_conn, &server.hostname, Some(restarts.reboot.as_str())))
+                + &restart_suffix(
+                    thread_conn,
+                    &server.hostname,
+                    Some(restarts.reboot.as_str()),
+                ))
         };
         match attempt() {
             Ok(message) => HostResult {

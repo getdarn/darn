@@ -62,7 +62,11 @@ pub fn run(
             let restarts = record_restart_state(thread_conn, server, handler, session)?;
             Ok(format!(
                 "upgraded{}",
-                restart_suffix(thread_conn, &server.hostname, Some(restarts.reboot.as_str()))
+                restart_suffix(
+                    thread_conn,
+                    &server.hostname,
+                    Some(restarts.reboot.as_str())
+                )
             ))
         };
         match attempt() {

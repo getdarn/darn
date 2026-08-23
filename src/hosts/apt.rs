@@ -127,7 +127,11 @@ impl HostHandler for AptHandler {
                 return Ok(());
             }
             let quoted = quote_all(&packages);
-            session.run(&format!("{BASE} install --only-upgrade {quoted}"), true, true)?;
+            session.run(
+                &format!("{BASE} install --only-upgrade {quoted}"),
+                true,
+                true,
+            )?;
         } else if non_security {
             let excludes: Vec<&str> = known_patches
                 .iter()
@@ -325,7 +329,10 @@ Conf curl (7.81.0-1ubuntu1.16 Ubuntu:22.04/jammy-security [amd64])
         assert!(by_pkg["curl"].is_security);
         assert!(by_pkg["openssl"].is_security);
         assert!(!by_pkg["vim"].is_security);
-        assert_eq!(by_pkg["curl"].version.as_deref(), Some("7.81.0-1ubuntu1.16"));
+        assert_eq!(
+            by_pkg["curl"].version.as_deref(),
+            Some("7.81.0-1ubuntu1.16")
+        );
     }
 
     #[test]

@@ -3,9 +3,7 @@ use std::time::{Duration, Instant};
 
 use rusqlite::Connection;
 
-use crate::commands::{
-    batch_exit_code, confirm, no_targets_message, servers_for_all, session_id,
-};
+use crate::commands::{batch_exit_code, confirm, no_targets_message, servers_for_all, session_id};
 use crate::db::{self, Server};
 use crate::errors::DarnError;
 use crate::hosts::{get_handler, Reboot, RestartCheck};
@@ -54,7 +52,11 @@ fn wait_for_reboot(
                 Some(recorder),
                 POLL_CONNECT_TIMEOUT,
             )?;
-            let boot_id = session.run(BOOT_ID_CMD, false, false)?.stdout.trim().to_string();
+            let boot_id = session
+                .run(BOOT_ID_CMD, false, false)?
+                .stdout
+                .trim()
+                .to_string();
             let rebooted = if !boot_id.is_empty() && !previous_boot_id.is_empty() {
                 boot_id != previous_boot_id
             } else {
@@ -68,10 +70,9 @@ fn wait_for_reboot(
             {
                 Ok(check) => check,
                 // The host is back, which is what matters here.
-                Err(e) => RestartCheck::new(
-                    Reboot::Unknown,
-                    Some(&format!("restart check failed: {e}")),
-                ),
+                Err(e) => {
+                    RestartCheck::new(Reboot::Unknown, Some(&format!("restart check failed: {e}")))
+                }
             };
             Ok(Some((started.elapsed().as_secs_f64(), check)))
         };
@@ -179,13 +180,8 @@ run `darn update` first, or pass --force"
                 db::set_reboot_state(thread_conn, &server.hostname, None, None)?;
                 return Ok("reboot issued".to_string());
             }
-            let (elapsed, check) = wait_for_reboot(
-                server,
-                thread_conn,
-                &session_id,
-                &previous_boot_id,
-                timeout,
-            )?;
+            let (elapsed, check) =
+                wait_for_reboot(server, thread_conn, &session_id, &previous_boot_id, timeout)?;
             db::set_reboot_state(
                 thread_conn,
                 &server.hostname,

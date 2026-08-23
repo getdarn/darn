@@ -134,8 +134,17 @@ mod tests {
 
     #[test]
     fn bad_ports_are_rejected() {
-        assert!(parse_target("host:abc").unwrap_err().to_string().contains("number"));
-        assert!(parse_target("host:0").unwrap_err().to_string().contains("range"));
-        assert!(parse_target("host:65536").unwrap_err().to_string().contains("range"));
+        assert!(parse_target("host:abc")
+            .unwrap_err()
+            .to_string()
+            .contains("number"));
+        assert!(parse_target("host:0")
+            .unwrap_err()
+            .to_string()
+            .contains("range"));
+        assert!(parse_target("host:65536")
+            .unwrap_err()
+            .to_string()
+            .contains("range"));
     }
 }

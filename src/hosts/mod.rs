@@ -144,7 +144,8 @@ pub const CONTAINER_PROBE: &str = "systemd-detect-virt --container 2>/dev/null \
 pub fn container_reboot_check(container: &str) -> Option<RestartCheck> {
     let value = container
         .lines()
-        .map(str::trim).rfind(|line| !line.is_empty())
+        .map(str::trim)
+        .rfind(|line| !line.is_empty())
         .unwrap_or("");
     if value.is_empty() || value == "none" {
         return None;

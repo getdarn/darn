@@ -109,7 +109,10 @@ pub fn list(db_path: Option<&Path>) -> Result<i32, DarnError> {
     let conn = db::open_db(db_path)?;
     let servers = db::list_servers(&conn)?;
     if servers.is_empty() {
-        println!("{}", yellow("No servers configured. Use `darn server add`."));
+        println!(
+            "{}",
+            yellow("No servers configured. Use `darn server add`.")
+        );
         return Ok(0);
     }
     render_server_list(&servers);

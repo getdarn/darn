@@ -3,8 +3,7 @@ use std::path::Path;
 use rusqlite::Connection;
 
 use crate::commands::{
-    batch_exit_code, confirm, no_targets_message, record_restart_state, servers_for_all,
-    session_id,
+    batch_exit_code, confirm, no_targets_message, record_restart_state, servers_for_all, session_id,
 };
 use crate::db::{self, Server};
 use crate::errors::DarnError;
@@ -25,7 +24,11 @@ pub fn run(
 
     let selectable = |conn: &Connection, hostname: &str| -> Result<i64, DarnError> {
         let (actionable, deferred) = db::count_pending_services(conn, hostname)?;
-        Ok(if force { actionable + deferred } else { actionable })
+        Ok(if force {
+            actionable + deferred
+        } else {
+            actionable
+        })
     };
 
     let (servers, description) = if target == "all" {
@@ -80,9 +83,11 @@ host's own restart policy declined them; pass --force to restart them anyway"
         if force {
             println!(
                 "{}",
-                red("--force bypasses the host's own restart policy; units such as \
+                red(
+                    "--force bypasses the host's own restart policy; units such as \
 dbus and systemd-logind are excluded by that policy because \
-bouncing them disrupts running sessions.")
+bouncing them disrupts running sessions."
+                )
             );
         }
         if !confirm(&format!("Restart services on {} host(s)?", servers.len())) {

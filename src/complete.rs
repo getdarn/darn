@@ -125,9 +125,17 @@ fn hostnames_from(path: &Path) -> Vec<(String, Option<String>)> {
     }
     // A darn3 database that has not been migrated yet may predate some
     // columns, so fall back to the one column that has always been there.
-    query_hosts(&conn, "SELECT hostname, host_type FROM servers ORDER BY hostname")
-        .or_else(|_| query_hosts(&conn, "SELECT hostname, NULL FROM servers ORDER BY hostname"))
-        .unwrap_or_default()
+    query_hosts(
+        &conn,
+        "SELECT hostname, host_type FROM servers ORDER BY hostname",
+    )
+    .or_else(|_| {
+        query_hosts(
+            &conn,
+            "SELECT hostname, NULL FROM servers ORDER BY hostname",
+        )
+    })
+    .unwrap_or_default()
 }
 
 fn query_hosts(
@@ -231,7 +239,10 @@ fn include_paths(pattern: &str, dir: Option<&Path>) -> Vec<PathBuf> {
         }
     };
 
-    let Some(file_name) = resolved.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+    let Some(file_name) = resolved
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+    else {
         return Vec::new();
     };
     if !file_name.contains('*') && !file_name.contains('?') {

@@ -12,7 +12,15 @@ use crate::hosts::{
 };
 use crate::ssh::SshSession;
 
-const REDHAT_IDS: [&str; 7] = ["rhel", "centos", "fedora", "rocky", "almalinux", "ol", "amzn"];
+const REDHAT_IDS: [&str; 7] = [
+    "rhel",
+    "centos",
+    "fedora",
+    "rocky",
+    "almalinux",
+    "ol",
+    "amzn",
+];
 
 // `needs-restarting` ships in dnf-plugins-core / yum-utils and is absent on
 // minimal images, so its own output has to be inspected rather than trusted.
@@ -60,7 +68,11 @@ impl RedHatHandler {
             false,
         )?;
         let pm = res.stdout.trim();
-        Ok(if pm.is_empty() { "yum".to_string() } else { pm.to_string() })
+        Ok(if pm.is_empty() {
+            "yum".to_string()
+        } else {
+            pm.to_string()
+        })
     }
 }
 
@@ -276,7 +288,9 @@ pub fn parse_redhat_restarts(output: &str) -> RestartCheck {
 /// One unit per line; anything without a systemd suffix is a diagnostic and is
 /// ignored, which also drops the missing-plugin complaint.
 pub fn parse_needs_restarting_services(output: &str) -> Vec<String> {
-    const SUFFIXES: [&str; 6] = [".service", ".socket", ".target", ".timer", ".path", ".mount"];
+    const SUFFIXES: [&str; 6] = [
+        ".service", ".socket", ".target", ".timer", ".path", ".mount",
+    ];
     let mut seen = HashSet::new();
     let mut units = Vec::new();
     for raw in output.lines() {
@@ -370,8 +384,13 @@ FEDORA-2026-ghi Low/Sec.       kernel-6.6.7-100.fc39.x86_64
 
     #[test]
     fn restarts_not_needed() {
-        let check =
-            parse_redhat_restarts(&probe("Reboot should not be necessary.\nEXIT=0", "none", "", "", ""));
+        let check = parse_redhat_restarts(&probe(
+            "Reboot should not be necessary.\nEXIT=0",
+            "none",
+            "",
+            "",
+            "",
+        ));
         assert_eq!(check.reboot, Reboot::No);
     }
 

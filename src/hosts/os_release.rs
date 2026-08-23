@@ -8,10 +8,7 @@ pub fn parse_os_release(content: &str) -> HashMap<String, String> {
             continue;
         }
         let (k, v) = line.split_once('=').unwrap();
-        let v = v
-            .trim()
-            .trim_matches('"')
-            .trim_matches('\'');
+        let v = v.trim().trim_matches('"').trim_matches('\'');
         fields.insert(k.trim().to_string(), v.to_string());
     }
     fields

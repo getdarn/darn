@@ -157,8 +157,7 @@ pub fn render_status(conn: &Connection, servers: &[Server], show_all: bool) {
     for s in servers {
         let patches = db::get_pending_patches(conn, &s.hostname).unwrap_or_default();
         let needs_reboot = s.reboot_required.as_deref() == Some("yes");
-        let services =
-            db::get_pending_services(conn, &s.hostname, Some(false)).unwrap_or_default();
+        let services = db::get_pending_services(conn, &s.hostname, Some(false)).unwrap_or_default();
         if patches.is_empty() && !needs_reboot && services.is_empty() && !show_all {
             continue;
         }
@@ -173,7 +172,11 @@ pub fn render_status(conn: &Connection, servers: &[Server], show_all: bool) {
                 format!("{} pending ({security} security)", patches.len()),
             ));
         }
-        fragments.extend(restart_parts(conn, &s.hostname, s.reboot_required.as_deref()));
+        fragments.extend(restart_parts(
+            conn,
+            &s.hostname,
+            s.reboot_required.as_deref(),
+        ));
         if fragments.is_empty() {
             // Only reachable under show_all: say why there is nothing to report.
             fragments.push(idle_fragment(s));

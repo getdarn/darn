@@ -203,7 +203,15 @@ pub fn add_server(
             distribution  = excluded.distribution,
             no_all        = COALESCE(?7, servers.no_all)
         ",
-        params![hostname, ssh_user, ssh_port, ssh_key_path, host_type, distribution, flag],
+        params![
+            hostname,
+            ssh_user,
+            ssh_port,
+            ssh_key_path,
+            host_type,
+            distribution,
+            flag
+        ],
     )?;
     Ok(())
 }
@@ -412,9 +420,8 @@ pub fn mark_services_deferred(
     hostname: &str,
     services: &[String],
 ) -> Result<(), DarnError> {
-    let mut stmt = conn.prepare(
-        "UPDATE pending_services SET deferred = 1 WHERE hostname = ?1 AND service = ?2",
-    )?;
+    let mut stmt = conn
+        .prepare("UPDATE pending_services SET deferred = 1 WHERE hostname = ?1 AND service = ?2")?;
     for service in services {
         stmt.execute(params![hostname, service])?;
     }
@@ -451,10 +458,7 @@ pub fn get_pending_services(
 }
 
 /// Return (actionable, deferred) counts for a host.
-pub fn count_pending_services(
-    conn: &Connection,
-    hostname: &str,
-) -> Result<(i64, i64), DarnError> {
+pub fn count_pending_services(conn: &Connection, hostname: &str) -> Result<(i64, i64), DarnError> {
     let counts = conn.query_row(
         "SELECT
             COALESCE(SUM(CASE WHEN deferred = 0 THEN 1 ELSE 0 END), 0) AS actionable,
@@ -480,7 +484,15 @@ pub fn record_command(
         "INSERT INTO command_log
             (hostname, session_id, command, stdout, stderr, exit_code, run_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![hostname, session_id, command, stdout, stderr, exit_code, utcnow()],
+        params![
+            hostname,
+            session_id,
+            command,
+            stdout,
+            stderr,
+            exit_code,
+            utcnow()
+        ],
     )?;
     Ok(())
 }
@@ -542,7 +554,17 @@ mod tests {
         user: &str,
         distribution: Option<&str>,
     ) {
-        add_server(conn, hostname, user, 22, None, host_type, distribution, None).unwrap();
+        add_server(
+            conn,
+            hostname,
+            user,
+            22,
+            None,
+            host_type,
+            distribution,
+            None,
+        )
+        .unwrap();
     }
 
     fn svc(names: &[&str]) -> Vec<String> {
@@ -573,7 +595,10 @@ mod tests {
         let servers = list_servers(&conn).unwrap();
         let names: Vec<&str> = servers.iter().map(|s| s.hostname.as_str()).collect();
         assert_eq!(names, ["alpha", "beta"]);
-        assert_eq!(get_server(&conn, "alpha").unwrap().unwrap().host_type, "debian");
+        assert_eq!(
+            get_server(&conn, "alpha").unwrap().unwrap().host_type,
+            "debian"
+        );
         assert!(remove_server(&conn, "alpha").unwrap());
         assert!(!remove_server(&conn, "alpha").unwrap());
         let names: Vec<String> = list_servers(&conn)
@@ -589,7 +614,10 @@ mod tests {
         let (_dir, conn) = open_tmp();
         add_with(&conn, "alpha", "debian", "root", Some("Ubuntu 22.04"));
         add_with(&conn, "alpha", "debian", "ubuntu", Some("Ubuntu 22.04"));
-        assert_eq!(get_server(&conn, "alpha").unwrap().unwrap().ssh_user, "ubuntu");
+        assert_eq!(
+            get_server(&conn, "alpha").unwrap().unwrap().ssh_user,
+            "ubuntu"
+        );
     }
 
     #[test]
@@ -597,12 +625,20 @@ mod tests {
         let (_dir, conn) = open_tmp();
         add_with(&conn, "alpha", "debian", "ubuntu", Some("Ubuntu 22.04 LTS"));
         assert_eq!(
-            get_server(&conn, "alpha").unwrap().unwrap().distribution.as_deref(),
+            get_server(&conn, "alpha")
+                .unwrap()
+                .unwrap()
+                .distribution
+                .as_deref(),
             Some("Ubuntu 22.04 LTS")
         );
         set_distribution(&conn, "alpha", Some("Ubuntu 24.04 LTS")).unwrap();
         assert_eq!(
-            get_server(&conn, "alpha").unwrap().unwrap().distribution.as_deref(),
+            get_server(&conn, "alpha")
+                .unwrap()
+                .unwrap()
+                .distribution
+                .as_deref(),
             Some("Ubuntu 24.04 LTS")
         );
     }
@@ -665,7 +701,16 @@ mod tests {
         let (_dir, conn) = open_tmp();
         add(&conn, "alpha");
         replace_pending_patches(&conn, "alpha", &[Patch::new("curl", "1", true)], true).unwrap();
-        record_command(&conn, "alpha", "s1", "echo hi", Some("hi"), Some(""), Some(0)).unwrap();
+        record_command(
+            &conn,
+            "alpha",
+            "s1",
+            "echo hi",
+            Some("hi"),
+            Some(""),
+            Some(0),
+        )
+        .unwrap();
         remove_server(&conn, "alpha").unwrap();
         assert!(get_pending_patches(&conn, "alpha").unwrap().is_empty());
         // command_log has no FK (intentionally kept for audit); removal must not error.
@@ -698,13 +743,19 @@ mod tests {
     fn reboot_state_round_trips() {
         let (_dir, conn) = open_tmp();
         add(&conn, "alpha");
-        assert_eq!(get_server(&conn, "alpha").unwrap().unwrap().reboot_required, None);
+        assert_eq!(
+            get_server(&conn, "alpha").unwrap().unwrap().reboot_required,
+            None
+        );
         set_reboot_state(&conn, "alpha", Some("yes"), Some("linux-image-generic")).unwrap();
         let server = get_server(&conn, "alpha").unwrap().unwrap();
         assert_eq!(server.reboot_required.as_deref(), Some("yes"));
         assert_eq!(server.reboot_detail.as_deref(), Some("linux-image-generic"));
         set_reboot_state(&conn, "alpha", None, None).unwrap();
-        assert_eq!(get_server(&conn, "alpha").unwrap().unwrap().reboot_required, None);
+        assert_eq!(
+            get_server(&conn, "alpha").unwrap().unwrap().reboot_required,
+            None
+        );
     }
 
     #[test]
@@ -734,7 +785,11 @@ mod tests {
         assert_eq!(server.reboot_required, None);
         set_reboot_state(&conn, "old-01", Some("unknown"), None).unwrap();
         assert_eq!(
-            get_server(&conn, "old-01").unwrap().unwrap().reboot_required.as_deref(),
+            get_server(&conn, "old-01")
+                .unwrap()
+                .unwrap()
+                .reboot_required
+                .as_deref(),
             Some("unknown")
         );
     }
@@ -743,7 +798,9 @@ mod tests {
     fn pending_services_round_trip_and_replace() {
         let (_dir, conn) = open_tmp();
         add(&conn, "alpha");
-        assert!(get_pending_services(&conn, "alpha", None).unwrap().is_empty());
+        assert!(get_pending_services(&conn, "alpha", None)
+            .unwrap()
+            .is_empty());
         replace_pending_services(&conn, "alpha", &svc(&["dbus.service", "cron.service"])).unwrap();
         assert_eq!(
             get_pending_services(&conn, "alpha", None).unwrap(),
@@ -765,7 +822,9 @@ mod tests {
         add(&conn, "alpha");
         replace_pending_services(&conn, "alpha", &svc(&["cron.service"])).unwrap();
         remove_server(&conn, "alpha").unwrap();
-        assert!(get_pending_services(&conn, "alpha", None).unwrap().is_empty());
+        assert!(get_pending_services(&conn, "alpha", None)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -851,14 +910,34 @@ mod tests {
         assert_eq!(server.ssh_user, "root");
         assert!(server.no_all);
 
-        add_server(&conn, "alpha", "root", 22, None, "debian", None, Some(false)).unwrap();
+        add_server(
+            &conn,
+            "alpha",
+            "root",
+            22,
+            None,
+            "debian",
+            None,
+            Some(false),
+        )
+        .unwrap();
         assert!(!get_server(&conn, "alpha").unwrap().unwrap().no_all);
     }
 
     #[test]
     fn add_server_can_set_no_all_on_a_new_host() {
         let (_dir, conn) = open_tmp();
-        add_server(&conn, "router", "admin", 22, None, "mikrotik", None, Some(true)).unwrap();
+        add_server(
+            &conn,
+            "router",
+            "admin",
+            22,
+            None,
+            "mikrotik",
+            None,
+            Some(true),
+        )
+        .unwrap();
         assert!(get_server(&conn, "router").unwrap().unwrap().no_all);
     }
 
