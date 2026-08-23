@@ -126,8 +126,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Download only what this job uses. A bare download-artifact pulls
+      # every artifact in the run, including the .dockerbuild build record
+      # that docker/build-push-action uploads -- irrelevant here, and one
+      # more thing whose download can fail and take the job with it.
       - uses: actions/download-artifact@v4
-        with: { path: artifacts }
+        with: { name: musl-amd64, path: artifacts/musl-amd64 }
+      - uses: actions/download-artifact@v4
+        with: { name: dist-shared, path: artifacts/dist-shared }
       - name: Assemble
         run: |
           set -eu
@@ -155,7 +161,9 @@ jobs:
       attestations: write
     steps:
       - uses: actions/download-artifact@v4
-        with: { path: artifacts }
+        with: { name: native-x86_64, path: artifacts/native-x86_64 }
+      - uses: actions/download-artifact@v4
+        with: { name: tarballs, path: artifacts/tarballs }
       - name: Collect
         run: |
           set -eu
@@ -203,7 +211,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
-        with: { path: artifacts }
+        with: { name: musl-amd64, path: artifacts/musl-amd64 }
+      - uses: actions/download-artifact@v4
+        with: { name: dist-shared, path: artifacts/dist-shared }
       - name: Stage build context
         run: |
           set -eu
@@ -218,6 +228,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
       - uses: docker/build-push-action@v6
+        # Suppresses the .dockerbuild build-record artifact; nothing consumes
+        # it and it only adds an artifact that other jobs must skip.
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: false
         with:
           context: ctx
           platforms: linux/amd64
@@ -232,7 +246,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
-        with: { path: artifacts }
+        with: { name: native-x86_64, path: artifacts/native-x86_64 }
       - run: pipx install cloudsmith-cli
       - name: Push to Cloudsmith
         env:
