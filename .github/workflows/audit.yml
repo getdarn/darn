@@ -2,9 +2,21 @@ name: Audit
 
 # OpenSSL, SQLite and libssh2 are statically vendored into the darn binary.
 # That means a distro updating its own openssl package does nothing for darn —
-# an advisory against openssl-src (or any other dependency) can only be fixed by
-# rebuilding and re-releasing darn. Treat a failure here as a release trigger,
-# not just as a lint.
+# an advisory against openssl-src can only be fixed by rebuilding and
+# re-releasing darn. Treat a vulnerability here as a release trigger.
+#
+# Policy: vulnerabilities fail the job; informational advisories (unmaintained,
+# unsound, yanked, notice) are reported in the log but do not fail, since they
+# usually sit in transitive dependencies that cannot be fixed on our schedule.
+# That is cargo-audit's default behaviour — it prints "N allowed warnings found"
+# and exits 0. To make a specific class fatal later, add e.g. `--deny unmaintained`.
+#
+# This calls cargo-audit directly rather than using rustsec/audit-check, which
+# routes results through a check run (needing checks: write, and failing with
+# "Resource not accessible by integration" without it), still declares the
+# deprecated node20 runtime, and offers no severity control beyond an
+# allowlist of specific advisory ids.
+
 on:
   schedule:
     - cron: '0 6 * * 1'
@@ -17,18 +29,14 @@ on:
 
 permissions:
   contents: read
-  # checks: write is what the Checks API needs to publish the audit result;
-  # without it the action fails with "Resource not accessible by integration".
-  checks: write
-  # issues: write lets the action open an issue for a new advisory on the
-  # scheduled run.
-  issues: write
 
 jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: rustsec/audit-check@v2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          tool: cargo-audit
+      - run: cargo audit
