@@ -22,13 +22,17 @@ pub struct HostResult {
 /// WAL plus the 30s busy timeout absorbs writer contention) and its own SSH
 /// session wired to a recorder that logs every command under `session_id`.
 /// Connect failures become failed results rather than aborting the batch.
+///
+/// `progress` is the message for the progress bar, or None for no bar at all —
+/// which is what a caller streaming a host's output live wants, since the two
+/// would otherwise be redrawing over each other.
 pub fn run_parallel<F>(
     servers: &[Server],
     work: F,
     session_id: &str,
     jobs: usize,
     db_path: Option<&Path>,
-    description: &str,
+    progress: Option<&str>,
 ) -> Vec<HostResult>
 where
     F: Fn(&Server, &mut SshSession<'_>, &Connection) -> HostResult + Sync,
@@ -37,15 +41,18 @@ where
         return Vec::new();
     }
 
-    let bar = ProgressBar::new(servers.len() as u64);
-    bar.set_style(
-        ProgressStyle::with_template(
-            "{spinner} {msg} {bar:40} {pos}/{len} {percent:>3}% {elapsed}",
-        )
-        .unwrap(),
-    );
-    bar.set_message(description.to_string());
-    bar.enable_steady_tick(Duration::from_millis(100));
+    let bar = progress.map(|description| {
+        let bar = ProgressBar::new(servers.len() as u64);
+        bar.set_style(
+            ProgressStyle::with_template(
+                "{spinner} {msg} {bar:40} {pos}/{len} {percent:>3}% {elapsed}",
+            )
+            .unwrap(),
+        );
+        bar.set_message(description.to_string());
+        bar.enable_steady_tick(Duration::from_millis(100));
+        bar
+    });
 
     let next = AtomicUsize::new(0);
     let results: Mutex<Vec<HostResult>> = Mutex::new(Vec::with_capacity(servers.len()));
@@ -60,11 +67,15 @@ where
                 }
                 let result = run_one(&servers[i], &work, session_id, db_path);
                 results.lock().unwrap().push(result);
-                bar.inc(1);
+                if let Some(bar) = &bar {
+                    bar.inc(1);
+                }
             });
         }
     });
-    bar.finish_and_clear();
+    if let Some(bar) = &bar {
+        bar.finish_and_clear();
+    }
 
     let mut results = results.into_inner().unwrap();
     results.sort_by(|a, b| a.hostname.cmp(&b.hostname));
@@ -142,8 +153,32 @@ mod tests {
 
     #[test]
     fn empty_server_list_returns_no_results() {
-        let results = run_parallel(&[], |_, _, _| unreachable!(), "sid", 4, None, "Working");
+        let results = run_parallel(
+            &[],
+            |_, _, _| unreachable!(),
+            "sid",
+            4,
+            None,
+            Some("Working"),
+        );
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn no_progress_message_means_no_bar_but_the_same_results() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("t.db");
+        let servers = vec![server("127.0.0.1")];
+        let results = run_parallel(
+            &servers,
+            |_, _, _| unreachable!(),
+            "sid",
+            1,
+            Some(&path),
+            None,
+        );
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].ok);
     }
 
     #[test]
@@ -157,7 +192,7 @@ mod tests {
             "sid",
             4,
             Some(&path),
-            "Working",
+            Some("Working"),
         );
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].hostname, "127.0.0.1");

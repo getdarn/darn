@@ -213,7 +213,14 @@ run `darn update` first, or pass --force"
         }
     };
 
-    let results = run_parallel(&servers, work, &session_id, jobs, db_path, &description);
+    let results = run_parallel(
+        &servers,
+        work,
+        &session_id,
+        jobs,
+        db_path,
+        Some(&description),
+    );
     let title = if target == "all" {
         "reboot all results".to_string()
     } else {

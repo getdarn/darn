@@ -68,7 +68,7 @@ pub fn run(db_path: Option<&Path>, jobs: usize) -> Result<i32, DarnError> {
         &session_id,
         jobs,
         db_path,
-        "Discovering patches",
+        Some("Discovering patches"),
     );
     render_results("update results", &results);
     Ok(batch_exit_code(&results))

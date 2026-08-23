@@ -142,7 +142,14 @@ bouncing them disrupts running sessions."
         }
     };
 
-    let results = run_parallel(&servers, work, &session_id, jobs, db_path, &description);
+    let results = run_parallel(
+        &servers,
+        work,
+        &session_id,
+        jobs,
+        db_path,
+        Some(&description),
+    );
     let title = if target == "all" {
         "restartservices all results".to_string()
     } else {

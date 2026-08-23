@@ -126,7 +126,12 @@ modifying it, and stays silent if there is no database yet.
 - `darn update [-j N]` — probe every host (including `--no-all` ones) and
   record pending patches, reboot state, and stale services.
 - `darn upgrade TARGET [--security|--non-security] [-j N] [--include-no-all]`
-  — apply patches to a hostname or the literal `all`.
+  — apply patches to a hostname or the literal `all`. Naming a single host
+  streams that host's output to your terminal as it happens, as if you had run
+  the package manager there yourself; `all` shows a progress bar instead,
+  because concurrent hosts interleaving would be unreadable. Either way the
+  summary table is printed at the end and the full output is recorded, to be
+  read back with `darn log`.
 - `darn reboot TARGET [-y] [--force] [--no-wait] [--timeout SECONDS] [-j N] [--include-no-all]`
   — reboot hosts flagged as needing it; waits for each host to come back
   (verified by a changed boot id) unless `--no-wait`.

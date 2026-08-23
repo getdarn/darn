@@ -51,6 +51,10 @@ enum Command {
     ///
     /// 'all' skips hosts marked --no-all unless --include-no-all is given;
     /// naming such a host directly always works.
+    ///
+    /// Naming a single host streams that host's output to your terminal as it
+    /// happens; 'all' shows a progress bar instead. Either way the full output
+    /// is recorded and can be read back with `darn log`.
     Upgrade {
         #[arg(add = ArgValueCandidates::new(complete::targets))]
         target: String,

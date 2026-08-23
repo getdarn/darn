@@ -6,7 +6,59 @@ use rusqlite::Connection;
 
 use crate::db::{self, LoggedCommand, Server};
 use crate::orchestrator::HostResult;
+use crate::ssh::{OutEvent, OutputSink};
 use crate::target::current_user;
+
+/// A sink that puts a remote command's output on the local terminal as it
+/// arrives, so watching a remote run looks like watching a local one.
+///
+/// Chunks are written as raw bytes rather than through a `String`: a read can
+/// land mid-way through a UTF-8 sequence, and passing the bytes straight out
+/// is both correct and exactly what running the command locally would do.
+///
+/// The `$ command` header goes to stderr, for the same reason a shell prompt
+/// is not part of a piped command's stdout: redirecting stdout then gets the
+/// remote output unpunctuated by darn's own framing.
+pub fn stream_to_terminal() -> OutputSink<'static> {
+    Box::new(|event| {
+        write_event(
+            event,
+            &mut std::io::stdout().lock(),
+            &mut std::io::stderr().lock(),
+        );
+    })
+}
+
+/// The command as a single prompt line.
+///
+/// Some of what an upgrade runs is a multi-line probe script; spilling all of
+/// it between two commands' output would bury the output it introduces. The
+/// first line plus an ellipsis reads as a prompt, and `darn log` still holds
+/// the command in full.
+fn command_header(command: &str) -> String {
+    match command.split_once('\n') {
+        Some((first, _)) => format!("$ {}…", first.trim_end()),
+        None => format!("$ {command}"),
+    }
+}
+
+/// Put one output event on `out`/`err`, flushing so it lands immediately.
+///
+/// Write errors are dropped: a closed pipe must not turn a successful upgrade
+/// into a failed one.
+fn write_event(event: OutEvent<'_>, out: &mut impl std::io::Write, err: &mut impl std::io::Write) {
+    let (sink, bytes): (&mut dyn std::io::Write, &[u8]) = match event {
+        OutEvent::Command(command) => {
+            let _ = writeln!(err, "{}", dim(&command_header(command)));
+            let _ = err.flush();
+            return;
+        }
+        OutEvent::Stdout(bytes) => (out, bytes),
+        OutEvent::Stderr(bytes) => (err, bytes),
+    };
+    let _ = sink.write_all(bytes);
+    let _ = sink.flush();
+}
 
 pub fn red(s: &str) -> String {
     style(s).red().to_string()
@@ -358,4 +410,67 @@ fn panel(header: &str, body: &str, width: usize) {
         }
     }
     println!("{}{}{}", cyan("╰"), cyan(&"─".repeat(inner + 2)), cyan("╯"));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn capture(events: Vec<OutEvent<'_>>) -> (String, String) {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        for event in events {
+            write_event(event, &mut out, &mut err);
+        }
+        (
+            String::from_utf8(out).unwrap(),
+            String::from_utf8(err).unwrap(),
+        )
+    }
+
+    #[test]
+    fn each_stream_keeps_its_own_channel() {
+        let (out, err) = capture(vec![
+            OutEvent::Stdout(b"Reading package lists...\n"),
+            OutEvent::Stderr(b"W: some warning\n"),
+        ]);
+        assert_eq!(out, "Reading package lists...\n");
+        assert!(err.contains("W: some warning"), "{err:?}");
+        assert!(!out.contains("warning"), "{out:?}");
+    }
+
+    #[test]
+    fn the_command_header_stays_out_of_stdout() {
+        let (out, err) = capture(vec![
+            OutEvent::Command("sudo -n -- sh -c 'apt-get update'"),
+            OutEvent::Stdout(b"Hit:1 http://deb.debian.org\n"),
+        ]);
+        // Framing must not interleave itself into the captured output.
+        assert_eq!(out, "Hit:1 http://deb.debian.org\n");
+        assert!(
+            err.contains("$ sudo -n -- sh -c 'apt-get update'"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn a_multi_line_command_is_elided_to_one_prompt_line() {
+        let (_, err) = capture(vec![OutEvent::Command(
+            "sudo -n -- sh -c 'export LC_ALL=C\necho \"### MARKER\"\nuname -r\n'",
+        )]);
+        assert_eq!(err.lines().count(), 1, "{err:?}");
+        assert!(
+            err.contains("$ sudo -n -- sh -c 'export LC_ALL=C…"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn chunks_are_passed_through_byte_for_byte() {
+        // A read can land mid-way through a UTF-8 sequence, so the two halves
+        // must arrive unaltered and rejoin into the original text.
+        let text = "é×日\n".as_bytes();
+        let (first, second) = text.split_at(3);
+        let (out, _) = capture(vec![OutEvent::Stdout(first), OutEvent::Stdout(second)]);
+        assert_eq!(out, "é×日\n");
+    }
 }

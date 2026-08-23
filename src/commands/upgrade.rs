@@ -7,7 +7,7 @@ use crate::db::{self, Server};
 use crate::errors::DarnError;
 use crate::hosts::get_handler;
 use crate::orchestrator::{run_parallel, HostResult};
-use crate::render::{render_results, restart_suffix};
+use crate::render::{render_results, restart_suffix, stream_to_terminal};
 use crate::ssh::SshSession;
 
 #[allow(clippy::too_many_arguments)]
@@ -41,12 +41,19 @@ pub fn run(
         (vec![single], format!("Upgrading {target}"))
     };
 
+    // One named host has the terminal to itself, so there is no reason to
+    // withhold what it prints until the end. Under 'all' the hosts would be
+    // interleaving, and the progress bar is the more readable summary.
+    let stream = target != "all";
     let session_id = session_id();
 
     let work = |server: &Server,
                 session: &mut SshSession<'_>,
                 thread_conn: &rusqlite::Connection|
      -> HostResult {
+        if stream {
+            session.set_output_sink(Some(stream_to_terminal()));
+        }
         let mut attempt = || -> Result<String, DarnError> {
             let handler = get_handler(&server.host_type)?;
             let known = db::get_pending_patches(thread_conn, &server.hostname)?;
@@ -83,7 +90,8 @@ pub fn run(
         }
     };
 
-    let results = run_parallel(&servers, work, &session_id, jobs, db_path, &description);
+    let progress = (!stream).then_some(description.as_str());
+    let results = run_parallel(&servers, work, &session_id, jobs, db_path, progress);
     let title = if target == "all" {
         "upgrade all results".to_string()
     } else {
