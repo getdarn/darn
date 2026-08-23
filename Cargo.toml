@@ -12,6 +12,9 @@ authors = ["Martin Maisey"]
 homepage = "https://github.com/getdarn/darn"
 repository = "https://github.com/getdarn/darn"
 readme = "README.md"
+# keywords/categories are unused while we do not publish to crates.io (the
+# `darn` name is taken there); kept so the manifest is complete and ready
+# if the crate is ever renamed and published.
 keywords = ["ssh", "patching", "sysadmin", "fleet", "automation"]
 categories = ["command-line-utilities"]
 exclude = ["/.github", "/.claude", "/dist"]

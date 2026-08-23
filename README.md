@@ -43,12 +43,6 @@ sudo install -m755 darn-0.1.0-x86_64-linux-musl/darn /usr/local/bin/darn
 Every release also ships `SHA256SUMS` and build provenance attestations, so a
 download can be verified with `sha256sum -c` and `gh attestation verify`.
 
-### With cargo
-
-```sh
-cargo install darn
-```
-
 ### Docker
 
 ```sh

@@ -9,7 +9,10 @@
 tag-prefix = ""
 tag-name = "v{{version}}"
 sign-tag = true
-publish = false           # release.yml runs cargo publish, after the artifacts build
+# Not published to crates.io: the `darn` name is taken by an unrelated
+# crate (shahinrostami/darn, held since 2020). Distribution is via the
+# GitHub Release, the Cloudsmith apt/yum repos and the GHCR image.
+publish = false
 push = true
 
 pre-release-replacements = [
