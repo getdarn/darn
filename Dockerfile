@@ -1,6 +1,6 @@
-# Assembled from prebuilt static musl binaries staged into dist/ by
-# .github/workflows/release.yml — nothing is compiled here, so buildx puts both
-# architectures together in seconds instead of emulating a full OpenSSL build.
+# Assembled from a prebuilt static musl binary staged into dist/ by
+# .github/workflows/release.yml — nothing is compiled here, so the image build
+# takes seconds.
 #
 # Build locally with:
 #   cargo build --release --target x86_64-unknown-linux-musl
@@ -8,8 +8,6 @@
 #   ci/gen-dist.sh /usr/bin/darn dist
 #   docker build -t darn .
 FROM alpine:3.24
-
-ARG TARGETARCH
 
 # openssh-client earns its place: darn rejects unknown host keys, and the
 # documented remedy is to ssh to the host once to accept it. Without ssh in the
@@ -20,7 +18,7 @@ ARG TARGETARCH
 RUN apk add --no-cache openssh-client bash \
  && adduser -D -h /home/darn darn
 
-COPY dist/darn-${TARGETARCH} /usr/bin/darn
+COPY dist/darn-amd64 /usr/bin/darn
 COPY dist/completions/darn.bash /usr/share/bash-completion/completions/darn
 
 USER darn

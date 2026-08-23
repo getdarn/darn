@@ -15,16 +15,7 @@ env:
 
 jobs:
   test:
-    name: test (${{ matrix.arch }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x86_64
-            runner: ubuntu-latest
-          - arch: aarch64
-            runner: ubuntu-24.04-arm
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -65,18 +56,19 @@ jobs:
     container: quay.io/pypa/manylinux_2_28_x86_64
     steps:
       - uses: actions/checkout@v4
-      # manylinux_2_28 is AlmaLinux 8, where perl ships split into subpackages
-      # and the base interpreter lacks IPC::Cmd, so the vendored openssl-src
-      # build dies with "Can't locate IPC/Cmd.pm in @INC" at config.pm line 19.
-      # The rest of this list is every other non-core module that OpenSSL's
-      # Configure and util/perl/OpenSSL/*.pm pull in; most are already present
-      # in the image, and dnf no-ops on those. Listing them costs nothing and
-      # avoids discovering the next missing one on the following line.
+      # manylinux_2_28 is AlmaLinux 8, where perl ships split into subpackages.
+      # IPC::Cmd is the one module OpenSSL 3's Configure needs that the image
+      # lacks, so without this the vendored openssl-src build dies with
+      # "Can't locate IPC/Cmd.pm in @INC" at OpenSSL/config.pm line 19.
+      # Time::Piece is the other one. (Text::Template and Test::More are also
+      # referenced but need nothing: the former is vendored inside openssl-src,
+      # the latter is only for the test suite, which we build with no-tests.)
+      # Requested as capabilities rather than package names: RHEL 8 hides
+      # modular subpackages from `dnf install <name>` even when they are in the
+      # repo metadata, and a capability also no-ops cleanly if a future base
+      # image already provides it.
       - name: Install OpenSSL build prerequisites
-        run: |
-          dnf -y install perl-IPC-Cmd perl-POSIX perl-FindBin perl-File-Path \
-                         perl-File-Copy perl-File-Basename \
-                         perl-Scalar-List-Utils perl-PathTools perl-Getopt-Std
+        run: dnf -y install "perl(IPC::Cmd)" "perl(Time::Piece)"
       - name: Install Rust
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
@@ -133,7 +125,21 @@ jobs:
           # Runs at all -> the glibc floor is low enough for this distro.
           darn --version
           darn --help > /dev/null
-          test -f /usr/share/man/man1/darn.1*
+
+          # The man page must be present in the PACKAGE. Checking the
+          # filesystem alone would be wrong: minimal images such as
+          # ubuntu:20.04 ship path-exclude=/usr/share/man/* in
+          # /etc/dpkg/dpkg.cfg.d/, so a missing file there reflects the
+          # image's policy, not a packaging bug.
+          if [ "${{ matrix.kind }}" = deb ]; then
+            dpkg-deb -c ./debian/*.deb | grep -q 'usr/share/man/man1/darn\.1'
+          else
+            rpm -qlp ./generate-rpm/*.rpm | grep -q '/usr/share/man/man1/darn\.1'
+          fi
+          # ...and on disk too, except where the image strips man pages.
+          if ! grep -rhsq 'path-exclude=/usr/share/man' /etc/dpkg/dpkg.cfg.d/; then
+            ls /usr/share/man/man1/darn.1* > /dev/null
+          fi
 
           # The completion script must point at the installed binary, not at
           # whatever path the package was built in.
