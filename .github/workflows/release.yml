@@ -53,6 +53,18 @@ jobs:
     container: ${{ matrix.image }}
     steps:
       - uses: actions/checkout@v4
+      # manylinux_2_28 is AlmaLinux 8, where perl ships split into subpackages
+      # and the base interpreter lacks IPC::Cmd, so the vendored openssl-src
+      # build dies with "Can't locate IPC/Cmd.pm in @INC" at config.pm line 19.
+      # The rest of this list is every other non-core module that OpenSSL's
+      # Configure and util/perl/OpenSSL/*.pm pull in; most are already present
+      # in the image, and dnf no-ops on those. Listing them costs nothing and
+      # avoids discovering the next missing one on the following line.
+      - name: Install OpenSSL build prerequisites
+        run: |
+          dnf -y install perl-IPC-Cmd perl-POSIX perl-FindBin perl-File-Path \
+                         perl-File-Copy perl-File-Basename \
+                         perl-Scalar-List-Utils perl-PathTools perl-Getopt-Std
       - name: Install Rust
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
