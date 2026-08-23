@@ -234,7 +234,7 @@ pub fn render_status(conn: &Connection, servers: &[Server], show_all: bool) {
             fragments.push(idle_fragment(s));
         }
         // Every fragment after the first is bulleted, as in the `update` table.
-        let mut lines = vec![fragments
+        let mut summary = fragments
             .iter()
             .enumerate()
             .map(|(i, (colour, text))| {
@@ -242,7 +242,14 @@ pub fn render_status(conn: &Connection, servers: &[Server], show_all: bool) {
                 paint(colour, &format!("{bullet}{text}"))
             })
             .collect::<Vec<_>>()
-            .join(" ")];
+            .join(" ");
+        // Unbulleted and greyed: not outstanding work, just a note that 'all'
+        // will pass this host by.
+        if s.no_all {
+            summary.push(' ');
+            summary.push_str(&dim("no-all"));
+        }
+        let mut lines = vec![summary];
         if !patches.is_empty() {
             let pkgs = patches
                 .iter()
