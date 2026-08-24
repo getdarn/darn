@@ -49,8 +49,11 @@ enum Command {
 
     /// Apply patches to TARGET (a hostname, or the literal 'all').
     ///
-    /// 'all' skips hosts marked --no-all unless --include-no-all is given;
-    /// naming such a host directly always works.
+    /// 'all' selects only the hosts that the last `darn update` or `darn
+    /// upgrade` found patches on — narrowed to security or non-security ones
+    /// when either flag is given. Hosts marked --no-all are left out unless
+    /// --include-no-all is given; naming one directly always works, and
+    /// upgrades it whatever the last discovery found.
     ///
     /// Naming a single host streams that host's output to your terminal as it
     /// happens; 'all' shows a progress bar instead. Either way the full output

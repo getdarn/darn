@@ -7,8 +7,28 @@ use crate::db::{self, Server};
 use crate::errors::DarnError;
 use crate::hosts::get_handler;
 use crate::orchestrator::{run_parallel, HostResult};
-use crate::render::{render_results, restart_suffix, stream_to_terminal};
+use crate::render::{green, render_results, restart_suffix, stream_to_terminal};
 use crate::ssh::SshSession;
+
+/// How many patches this run would actually install on a host.
+///
+/// What counts depends on the flags, so that `--security` does not drag in a
+/// host whose only pending patches are ordinary ones.
+fn selectable(
+    conn: &rusqlite::Connection,
+    hostname: &str,
+    security: bool,
+    non_security: bool,
+) -> Result<i64, DarnError> {
+    let (total, sec, non_sec) = db::count_pending_patches(conn, hostname)?;
+    Ok(if security {
+        sec
+    } else if non_security {
+        non_sec
+    } else {
+        total
+    })
+}
 
 #[allow(clippy::too_many_arguments)]
 pub fn run(
@@ -27,9 +47,29 @@ pub fn run(
     let conn = db::open_db(db_path)?;
 
     let (servers, description) = if target == "all" {
-        let servers = servers_for_all(&conn, include_no_all)?;
-        if let Some(empty) = no_targets_message(&conn, &servers)? {
+        let candidates = servers_for_all(&conn, include_no_all)?;
+        if let Some(empty) = no_targets_message(&conn, &candidates)? {
             println!("{empty}");
+            return Ok(0);
+        }
+        // Selection comes from the last discovery, as it does for `reboot all`
+        // and `restartservices all`: a host with nothing pending would only be
+        // connected to, updated and left alone.
+        let mut servers = Vec::new();
+        for s in candidates {
+            if selectable(&conn, &s.hostname, security, non_security)? > 0 {
+                servers.push(s);
+            }
+        }
+        if servers.is_empty() {
+            let kind = if security {
+                "security patches"
+            } else if non_security {
+                "non-security patches"
+            } else {
+                "patches"
+            };
+            println!("{}", green(&format!("No hosts have {kind} pending.")));
             return Ok(0);
         }
         (servers, "Applying patches".to_string())
@@ -99,4 +139,40 @@ pub fn run(
     };
     render_results(&title, &results);
     Ok(batch_exit_code(&results))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn the_flags_decide_which_pending_patches_make_a_host_worth_visiting() {
+        let dir = TempDir::new().unwrap();
+        let conn = db::open_db(Some(&dir.path().join("t.db"))).unwrap();
+        let patch = |package: &str, is_security: bool| db::Patch::new(package, "1.0", is_security);
+        for (host, patches) in [
+            ("sec-only", vec![patch("openssl", true)]),
+            ("nonsec-only", vec![patch("vim", false)]),
+            ("both", vec![patch("openssl", true), patch("vim", false)]),
+            ("nothing", vec![]),
+        ] {
+            db::add_server(&conn, host, "nobody", 22, None, "debian", None, None).unwrap();
+            db::replace_pending_patches(&conn, host, &patches, true).unwrap();
+        }
+
+        let count =
+            |host, security, non_security| selectable(&conn, host, security, non_security).unwrap();
+        // (host, plain, --security, --non-security)
+        for (host, plain, sec, non_sec) in [
+            ("sec-only", 1, 1, 0),
+            ("nonsec-only", 1, 0, 1),
+            ("both", 2, 1, 1),
+            ("nothing", 0, 0, 0),
+        ] {
+            assert_eq!(count(host, false, false), plain, "{host} plain");
+            assert_eq!(count(host, true, false), sec, "{host} --security");
+            assert_eq!(count(host, false, true), non_sec, "{host} --non-security");
+        }
+    }
 }
