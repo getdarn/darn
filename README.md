@@ -121,7 +121,9 @@ modifying it, and stays silent if there is no database yet.
 
 - `darn server add [USER@]HOSTNAME[:PORT] [--port N] [--key PATH] [--no-all|--all]`
   — add or refresh a host. `--no-all` holds it back from `all` targets;
-  re-adding without either flag keeps the current setting.
+  re-adding without either flag keeps the current setting. Offers to record an
+  unknown host key, and to install your public key where none works
+  (see [SSH behaviour](#ssh-behaviour)).
 - `darn server remove|set|list`
 - `darn update [-j N]` — probe every host (including `--no-all` ones) and
   record pending patches, reboot state, and stale services.
@@ -156,11 +158,30 @@ errors.
 
 ## SSH behaviour
 
-darn never prompts for a password. Authentication tries the explicit `--key`
-file, then the SSH agent, then `~/.ssh/id_*`. Unknown or mismatched host keys
-are rejected — connect once with plain `ssh` to accept a new host key.
-Privilege escalation uses passwordless `sudo -n` (skipped when the SSH user
-is `root`).
+Authentication tries the explicit `--key` file, then the SSH agent, then
+`~/.ssh/id_*`. Unknown or mismatched host keys are rejected. Privilege
+escalation uses passwordless `sudo -n` (skipped when the SSH user is `root`).
+
+`darn server add` is the one command that will ask you about either, so that
+adding a host you have never touched takes one command rather than a detour
+through `ssh` and `ssh-copy-id`. Both questions are asked only when stdin is a
+terminal — `cron` runs fail as before rather than hang — and Ctrl+C cancels.
+
+- **An unknown host key** is shown with its `SHA256` fingerprint, in ssh(1)'s
+  own wording, and recorded in `~/.ssh/known_hosts` if you type `yes` (or paste
+  the fingerprint back). Entries are written hashed, as OpenSSH writes them
+  here, and the file is created 600 in a 700 `~/.ssh` if it does not exist. A
+  *mismatched* key is never offered this way: that is a changed key, not a new
+  one, and stays a hard error everywhere.
+- **No usable key** prompts for the password of the **remote** account — the
+  one on the host being added, not your local login — and uses it once to
+  append your public key (`--key`'s `.pub` sibling, else the first of
+  `~/.ssh/id_*.pub`) to `~/.ssh/authorized_keys` there. Every later connection
+  uses the key. Hosts without a POSIX shell, such as RouterOS, need their keys
+  installed with their own tools.
+
+Every other command still rejects a host that is not already in `known_hosts`;
+`darn server add` is where a host is vouched for.
 
 ## Database
 

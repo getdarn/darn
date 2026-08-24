@@ -1,14 +1,21 @@
 use std::io::{ErrorKind, Read};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use ssh2::{CheckResult, KnownHostFileKind, Session};
+use ssh2::{
+    CheckResult, HashType, HostKeyType, KeyboardInteractivePrompt, KnownHostFileKind, Prompt,
+    Session,
+};
 
 use crate::errors::DarnError;
 
 pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 pub const COMMAND_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// The keys tried when none was named, newest algorithm first — the same
+/// names, in the same order, as OpenSSH's own defaults.
+const DEFAULT_KEY_NAMES: [&str; 4] = ["id_ed25519", "id_rsa", "id_ecdsa", "id_dsa"];
 
 #[derive(Clone, Debug)]
 pub struct CommandResult {
@@ -50,12 +57,51 @@ pub type OutputSink<'a> = Box<dyn Fn(OutEvent<'_>) + 'a>;
 /// Not thread-safe; create one per worker thread. Authentication never
 /// prompts: explicit key file, then the SSH agent, then the default
 /// ~/.ssh/id_* keys. Unknown or mismatched host keys are rejected.
+/// `connect_with_password` is the one exception, and only `server add` uses
+/// it — to put a key on a host that has none.
 pub struct SshSession<'a> {
     pub hostname: String,
     user: String,
     recorder: Option<Recorder<'a>>,
     sink: Option<OutputSink<'a>>,
     sess: Session,
+}
+
+/// How a session should authenticate.
+enum Auth<'p> {
+    /// The usual order: explicit key, then the agent, then ~/.ssh/id_*.
+    Keys(Option<&'p str>),
+    /// A password typed at the terminal, held only for this connect.
+    Password(&'p str),
+}
+
+/// A failed connect, split by whether authentication was what failed.
+///
+/// Only that case means "the host is reachable and its key is known, we just
+/// have no credential it accepts" — the one case where offering to install a
+/// key is the right response rather than a way to paper over a bad host key.
+enum ConnectErr {
+    Auth(String),
+    /// The host key is in no known_hosts file. A *mismatched* key is `Other`:
+    /// first contact is a question, a changed key is an answer.
+    UnknownHostKey(String),
+    Other(String),
+}
+
+impl ConnectErr {
+    fn into_darn(self, hostname: &str) -> DarnError {
+        match self {
+            ConnectErr::Auth(msg) => {
+                DarnError::SshAuth(format!("failed to connect to {hostname}: {msg}"))
+            }
+            ConnectErr::UnknownHostKey(msg) => {
+                DarnError::SshHostKeyUnknown(format!("failed to connect to {hostname}: {msg}"))
+            }
+            ConnectErr::Other(msg) => {
+                DarnError::Ssh(format!("failed to connect to {hostname}: {msg}"))
+            }
+        }
+    }
 }
 
 impl<'a> SshSession<'a> {
@@ -67,8 +113,49 @@ impl<'a> SshSession<'a> {
         recorder: Option<Recorder<'a>>,
         connect_timeout: Duration,
     ) -> Result<Self, DarnError> {
-        let sess = Self::connect_inner(hostname, user, port, key_path, connect_timeout)
-            .map_err(|e| DarnError::Ssh(format!("failed to connect to {hostname}: {e}")))?;
+        Self::connect_with(
+            hostname,
+            user,
+            port,
+            Auth::Keys(key_path),
+            recorder,
+            connect_timeout,
+        )
+    }
+
+    /// Connect with a password rather than a key.
+    ///
+    /// Only `darn server add` uses this, and only to install a public key on
+    /// a host that accepts none of ours; every connection after that is
+    /// key-authenticated, so the password is asked for once and never stored.
+    pub fn connect_with_password(
+        hostname: &str,
+        user: &str,
+        port: u16,
+        password: &str,
+        recorder: Option<Recorder<'a>>,
+        connect_timeout: Duration,
+    ) -> Result<Self, DarnError> {
+        Self::connect_with(
+            hostname,
+            user,
+            port,
+            Auth::Password(password),
+            recorder,
+            connect_timeout,
+        )
+    }
+
+    fn connect_with(
+        hostname: &str,
+        user: &str,
+        port: u16,
+        auth: Auth<'_>,
+        recorder: Option<Recorder<'a>>,
+        connect_timeout: Duration,
+    ) -> Result<Self, DarnError> {
+        let sess = Self::connect_inner(hostname, user, port, auth, connect_timeout)
+            .map_err(|e| e.into_darn(hostname))?;
         Ok(SshSession {
             hostname: hostname.to_string(),
             user: user.to_string(),
@@ -88,24 +175,48 @@ impl<'a> SshSession<'a> {
         hostname: &str,
         user: &str,
         port: u16,
-        key_path: Option<&str>,
+        auth: Auth<'_>,
         connect_timeout: Duration,
-    ) -> Result<Session, String> {
+    ) -> Result<Session, ConnectErr> {
+        let (sess, _addr) =
+            Self::open_session(hostname, port, connect_timeout).map_err(ConnectErr::Other)?;
+        check_known_hosts(&sess, hostname, port)?;
+        match auth {
+            Auth::Keys(key_path) => authenticate(&sess, user, key_path),
+            Auth::Password(password) => authenticate_password(&sess, user, password),
+        }
+        .map_err(ConnectErr::Auth)?;
+
+        // From here on, blocking calls are bounded by the command timeout.
+        sess.set_timeout(COMMAND_TIMEOUT.as_millis() as u32);
+        Ok(sess)
+    }
+
+    /// Connect and handshake, without checking the host key or authenticating.
+    ///
+    /// Returns the address that answered as well as the session: it is what
+    /// ssh(1) shows in parentheses when asking about an unknown host, and the
+    /// name alone would not say which of several addresses replied.
+    fn open_session(
+        hostname: &str,
+        port: u16,
+        connect_timeout: Duration,
+    ) -> Result<(Session, SocketAddr), String> {
         let addrs = (hostname, port)
             .to_socket_addrs()
             .map_err(|e| e.to_string())?;
-        let mut stream = None;
+        let mut connected = None;
         let mut last_err = "no addresses resolved".to_string();
         for addr in addrs {
             match TcpStream::connect_timeout(&addr, connect_timeout) {
                 Ok(s) => {
-                    stream = Some(s);
+                    connected = Some((s, addr));
                     break;
                 }
                 Err(e) => last_err = e.to_string(),
             }
         }
-        let stream = stream.ok_or(last_err)?;
+        let (stream, addr) = connected.ok_or(last_err)?;
 
         let mut sess = Session::new().map_err(|e| e.to_string())?;
         sess.set_timeout(connect_timeout.as_millis() as u32);
@@ -118,13 +229,7 @@ impl<'a> SshSession<'a> {
         }
         sess.set_tcp_stream(stream);
         sess.handshake().map_err(|e| e.to_string())?;
-
-        check_known_hosts(&sess, hostname, port)?;
-        authenticate(&sess, user, key_path)?;
-
-        // From here on, blocking calls are bounded by the command timeout.
-        sess.set_timeout(COMMAND_TIMEOUT.as_millis() as u32);
-        Ok(sess)
+        Ok((sess, addr))
     }
 
     pub fn run(
@@ -310,9 +415,21 @@ pub(crate) fn known_hosts_files() -> Vec<PathBuf> {
     files
 }
 
+/// Host key algorithms in OpenSSH's own order of preference.
+const SUPPORTED_HOSTKEY_ALGORITHMS: [&str; 8] = [
+    "ssh-ed25519",
+    "ecdsa-sha2-nistp256",
+    "ecdsa-sha2-nistp384",
+    "ecdsa-sha2-nistp521",
+    "rsa-sha2-512",
+    "rsa-sha2-256",
+    "ssh-rsa",
+    "ssh-dss",
+];
+
 /// The host key algorithms to offer, with the types already stored in
 /// known_hosts for this host first — mirroring OpenSSH's behaviour so the
-/// server presents a key we can actually verify. None when nothing matched.
+/// server presents a key we can actually verify.
 fn preferred_hostkey_algorithms(hostname: &str, port: u16) -> Option<String> {
     let mut stored_types: Vec<String> = Vec::new();
     for file in known_hosts_files() {
@@ -326,7 +443,11 @@ fn preferred_hostkey_algorithms(hostname: &str, port: u16) -> Option<String> {
         }
     }
     if stored_types.is_empty() {
-        return None;
+        // First contact, so there is no stored type to match. Ask in
+        // OpenSSH's order anyway: the key darn then shows and records is the
+        // one `ssh` would have shown for the same host, which is what makes
+        // comparing the two fingerprints meaningful.
+        return Some(SUPPORTED_HOSTKEY_ALGORITHMS.join(","));
     }
     let algs = expand_and_order(&stored_types);
     if algs.is_empty() {
@@ -341,16 +462,7 @@ fn preferred_hostkey_algorithms(hostname: &str, port: u16) -> Option<String> {
 /// algorithms libssh2 supports as fallbacks, so an unknown host still
 /// handshakes and then fails the known-hosts check with a useful message.
 fn expand_and_order(stored_types: &[String]) -> String {
-    const SUPPORTED: [&str; 8] = [
-        "ssh-ed25519",
-        "ecdsa-sha2-nistp256",
-        "ecdsa-sha2-nistp384",
-        "ecdsa-sha2-nistp521",
-        "rsa-sha2-512",
-        "rsa-sha2-256",
-        "ssh-rsa",
-        "ssh-dss",
-    ];
+    const SUPPORTED: [&str; 8] = SUPPORTED_HOSTKEY_ALGORITHMS;
     let mut algs: Vec<&str> = Vec::new();
     for key_type in stored_types {
         let expanded: &[&str] = match key_type.as_str() {
@@ -478,8 +590,10 @@ pub(crate) fn glob_match(pattern: &str, host: &str) -> bool {
     inner(pattern.as_bytes(), host.as_bytes())
 }
 
-fn check_known_hosts(sess: &Session, hostname: &str, port: u16) -> Result<(), String> {
-    let mut kh = sess.known_hosts().map_err(|e| e.to_string())?;
+fn check_known_hosts(sess: &Session, hostname: &str, port: u16) -> Result<(), ConnectErr> {
+    let mut kh = sess
+        .known_hosts()
+        .map_err(|e| ConnectErr::Other(e.to_string()))?;
     for file in known_hosts_files() {
         // Missing files are fine; paramiko's load_system_host_keys ignores them too.
         let _ = kh.read_file(&file, KnownHostFileKind::OpenSSH);
@@ -487,15 +601,20 @@ fn check_known_hosts(sess: &Session, hostname: &str, port: u16) -> Result<(), St
 
     let (key, _key_type) = sess
         .host_key()
-        .ok_or_else(|| "server presented no host key".to_string())?;
+        .ok_or_else(|| ConnectErr::Other("server presented no host key".to_string()))?;
     match kh.check_port(hostname, port, key) {
         CheckResult::Match => Ok(()),
-        CheckResult::Mismatch => Err(format!(
+        CheckResult::Mismatch => Err(ConnectErr::Other(format!(
             "host key mismatch for '{hostname}' (possible MITM); fix ~/.ssh/known_hosts"
-        )),
-        CheckResult::NotFound | CheckResult::Failure => Err(format!(
+        ))),
+        CheckResult::NotFound => Err(ConnectErr::UnknownHostKey(format!(
             "server '{hostname}' not found in known_hosts; connect once with ssh to accept its key"
-        )),
+        ))),
+        // Not a first contact: libssh2 could not perform the comparison at
+        // all, and offering to record a key would paper over that.
+        CheckResult::Failure => Err(ConnectErr::Other(format!(
+            "could not check the host key for '{hostname}' against known_hosts"
+        ))),
     }
 }
 
@@ -523,7 +642,7 @@ fn authenticate(sess: &Session, user: &str, key_path: Option<&str>) -> Result<()
     }
 
     if let Some(home) = dirs::home_dir() {
-        for name in ["id_ed25519", "id_rsa", "id_ecdsa", "id_dsa"] {
+        for name in DEFAULT_KEY_NAMES {
             let path = home.join(".ssh").join(name);
             if path.exists()
                 && sess.userauth_pubkey_file(user, None, &path, None).is_ok()
@@ -539,6 +658,299 @@ fn authenticate(sess: &Session, user: &str, key_path: Option<&str>) -> Result<()
     } else {
         Err("Authentication failed.".to_string())
     }
+}
+
+/// Authenticate with a password, however this server asks for one.
+///
+/// `password` covers the plain method; `keyboard-interactive` is the same
+/// password behind PAM, which is all some hosts offer, so both are tried.
+fn authenticate_password(sess: &Session, user: &str, password: &str) -> Result<(), String> {
+    // An empty list means the server would not say; try both rather than
+    // deciding on its behalf.
+    let methods = sess.auth_methods(user).unwrap_or_default().to_string();
+    let offers = |method: &str| methods.is_empty() || methods.split(',').any(|m| m == method);
+
+    if offers("password") && sess.userauth_password(user, password).is_ok() && sess.authenticated()
+    {
+        return Ok(());
+    }
+    if offers("keyboard-interactive") {
+        let mut prompter = PasswordPrompter {
+            password,
+            answered: false,
+        };
+        if sess
+            .userauth_keyboard_interactive(user, &mut prompter)
+            .is_ok()
+            && sess.authenticated()
+        {
+            return Ok(());
+        }
+    }
+
+    if sess.authenticated() {
+        Ok(())
+    } else if methods.is_empty() {
+        Err("password authentication failed".to_string())
+    } else {
+        Err(format!(
+            "password authentication failed (server offers: {methods})"
+        ))
+    }
+}
+
+/// Answers a PAM-style challenge with the one password we collected.
+///
+/// The first hidden prompt gets it; anything further — a second factor, say —
+/// gets an empty answer and is refused by the server, which is the honest
+/// outcome when we have nothing else to give it.
+struct PasswordPrompter<'p> {
+    password: &'p str,
+    answered: bool,
+}
+
+impl KeyboardInteractivePrompt for PasswordPrompter<'_> {
+    fn prompt<'a>(
+        &mut self,
+        _user: &str,
+        _instructions: &str,
+        prompts: &[Prompt<'a>],
+    ) -> Vec<String> {
+        prompts
+            .iter()
+            .map(|prompt| {
+                if prompt.echo || self.answered {
+                    String::new()
+                } else {
+                    self.answered = true;
+                    self.password.to_string()
+                }
+            })
+            .collect()
+    }
+}
+
+/// A host key as the server presented it, ready to show and to record.
+pub struct HostKey {
+    /// The address that answered, as ssh(1) prints it in parentheses.
+    pub address: String,
+    /// `SHA256:...`, the same string `ssh-keygen -lf` shows.
+    pub fingerprint: String,
+    /// The algorithm as ssh(1) names it in the prompt, e.g. `ED25519`.
+    pub algorithm: String,
+    /// The algorithm as known_hosts spells it, e.g. `ssh-ed25519`.
+    key_type: String,
+    key: Vec<u8>,
+}
+
+/// Fetch a host's key without authenticating or checking known_hosts.
+///
+/// Used to show the user what they are being asked to trust. Trusting it is a
+/// separate step: whatever is recorded here is verified by the real connect
+/// that follows, so a key swapped in between the two fails as a mismatch
+/// rather than slipping through.
+pub fn probe_host_key(
+    hostname: &str,
+    port: u16,
+    connect_timeout: Duration,
+) -> Result<HostKey, DarnError> {
+    let (sess, addr) = SshSession::open_session(hostname, port, connect_timeout)
+        .map_err(|e| DarnError::Ssh(format!("failed to connect to {hostname}: {e}")))?;
+
+    let (key, key_type) = sess
+        .host_key()
+        .ok_or_else(|| DarnError::Ssh(format!("{hostname} presented no host key")))?;
+    let (algorithm, wire_name) = match key_type {
+        HostKeyType::Ed25519 => ("ED25519", "ssh-ed25519"),
+        HostKeyType::Rsa => ("RSA", "ssh-rsa"),
+        HostKeyType::Dss => ("DSA", "ssh-dss"),
+        HostKeyType::Ecdsa256 => ("ECDSA", "ecdsa-sha2-nistp256"),
+        HostKeyType::Ecdsa384 => ("ECDSA", "ecdsa-sha2-nistp384"),
+        HostKeyType::Ecdsa521 => ("ECDSA", "ecdsa-sha2-nistp521"),
+        // Recording a key we cannot name would produce a line no ssh could
+        // read back, so stop rather than write nonsense.
+        HostKeyType::Unknown => {
+            return Err(DarnError::Ssh(format!(
+                "{hostname} presented a host key of a type darn cannot record"
+            )))
+        }
+    };
+
+    // libssh2 hashes the key for us, which is why no sha2 crate is needed.
+    use base64::Engine;
+    let digest = sess
+        .host_key_hash(HashType::Sha256)
+        .ok_or_else(|| DarnError::Ssh(format!("{hostname} gave no SHA256 host key hash")))?;
+    let fingerprint = format!(
+        "SHA256:{}",
+        base64::engine::general_purpose::STANDARD_NO_PAD.encode(digest)
+    );
+
+    Ok(HostKey {
+        address: addr.ip().to_string(),
+        fingerprint,
+        algorithm: algorithm.to_string(),
+        key_type: wire_name.to_string(),
+        key: key.to_vec(),
+    })
+}
+
+/// Where else this exact key is already trusted, as `file:line: pattern`.
+///
+/// ssh(1) shows this when asking about an unknown name, and it is the useful
+/// half of the question: a key already trusted under another name is a host
+/// you have met, not a stranger.
+pub fn other_names_for_key(host_key: &HostKey) -> Vec<String> {
+    use base64::Engine;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&host_key.key);
+    let mut found = Vec::new();
+    for file in known_hosts_files() {
+        let Ok(content) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        for (index, raw) in content.lines().enumerate() {
+            let line = raw.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let mut fields = line.split_whitespace();
+            let (Some(patterns), Some(_type), Some(key)) =
+                (fields.next(), fields.next(), fields.next())
+            else {
+                continue;
+            };
+            if key == encoded {
+                found.push(format!("{}:{}: {patterns}", file.display(), index + 1));
+            }
+        }
+    }
+    found
+}
+
+/// Record `host_key` in the user's known_hosts, returning the file written.
+///
+/// The entry is hashed, as OpenSSH writes them here, and names the host the
+/// way `check_port` looks it up: bare at port 22, `[host]:port` otherwise.
+pub fn remember_host_key(
+    host_key: &HostKey,
+    hostname: &str,
+    port: u16,
+) -> Result<PathBuf, DarnError> {
+    let name = if port == 22 {
+        hostname.to_string()
+    } else {
+        format!("[{hostname}]:{port}")
+    };
+    let mut salt = [0u8; 20];
+    getrandom::fill(&mut salt)
+        .map_err(|e| DarnError::Other(format!("cannot generate a known_hosts salt: {e}")))?;
+
+    // Only ever the user's own file: /etc/ssh/ssh_known_hosts is the
+    // administrator's, and darn is not it.
+    let path = dirs::home_dir()
+        .ok_or_else(|| DarnError::Other("no home directory to write known_hosts in".to_string()))?
+        .join(".ssh")
+        .join("known_hosts");
+    let entry = known_hosts_entry(&name, host_key, &salt);
+    append_known_host(&path, &entry)
+        .map_err(|e| DarnError::Other(format!("cannot write {}: {e}", path.display())))?;
+    Ok(path)
+}
+
+/// One hashed known_hosts line: `|1|<salt>|<HMAC-SHA1(salt, name)> type key`.
+fn known_hosts_entry(name: &str, host_key: &HostKey, salt: &[u8]) -> String {
+    use base64::Engine;
+    use hmac::{Hmac, Mac};
+
+    let engine = base64::engine::general_purpose::STANDARD;
+    let mut mac = Hmac::<sha1::Sha1>::new_from_slice(salt).expect("HMAC takes a key of any size");
+    mac.update(name.as_bytes());
+    let hash = mac.finalize().into_bytes();
+    format!(
+        "|1|{}|{} {} {}",
+        engine.encode(salt),
+        engine.encode(hash),
+        host_key.key_type,
+        engine.encode(&host_key.key)
+    )
+}
+
+/// Append a line, creating ~/.ssh and known_hosts with the modes ssh expects.
+///
+/// A file not ending in a newline gets one first: appending blindly would
+/// otherwise splice our entry onto the end of somebody else's, silently
+/// invalidating both.
+fn append_known_host(path: &Path, entry: &str) -> std::io::Result<()> {
+    use std::io::{Seek, SeekFrom, Write};
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    if let Some(dir) = path.parent() {
+        if !dir.exists() {
+            std::fs::create_dir_all(dir)?;
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+        }
+    }
+    // Readable as well as appendable: the trailing-newline check below has
+    // to look at what is already there. Appending still lands at the end
+    // whatever the read leaves the cursor on.
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .read(true)
+        .mode(0o600)
+        .open(path)?;
+
+    let end = file.seek(SeekFrom::End(0))?;
+    if end > 0 {
+        let mut last = [0u8; 1];
+        file.seek(SeekFrom::End(-1))?;
+        std::io::Read::read_exact(&mut file, &mut last)?;
+        if last[0] != b'\n' {
+            file.write_all(b"\n")?;
+        }
+    }
+    file.write_all(entry.as_bytes())?;
+    file.write_all(b"\n")
+}
+
+/// The public key to install on a host that accepts none of ours, following
+/// the order `authenticate` tries private keys in. An explicit `--key` names
+/// its own `.pub` sibling.
+///
+/// None when there is nothing to install — no `~/.ssh/id_*.pub` at all, or a
+/// named key whose public half is missing.
+pub fn default_public_key(key_path: Option<&str>) -> Option<PathBuf> {
+    if let Some(key) = key_path {
+        let path = expand_tilde(key);
+        let public = if path.extension().is_some_and(|ext| ext == "pub") {
+            path
+        } else {
+            let mut name = path.file_name()?.to_os_string();
+            name.push(".pub");
+            path.with_file_name(name)
+        };
+        return public.exists().then_some(public);
+    }
+    let ssh_dir = dirs::home_dir()?.join(".ssh");
+    DEFAULT_KEY_NAMES
+        .iter()
+        .map(|name| ssh_dir.join(format!("{name}.pub")))
+        .find(|path| path.exists())
+}
+
+/// The remote command that appends `public_key` to the user's
+/// authorized_keys, creating ~/.ssh at 700 and the file at 600 if needed.
+///
+/// Written to be safe to run twice: an identical line already present is left
+/// alone. `restorecon` matches what ssh-copy-id does, so the file is usable
+/// on an SELinux host; hosts without it skip that step.
+pub fn install_authorized_key_command(public_key: &str) -> String {
+    let key = crate::quote::sh_quote(public_key);
+    format!(
+        "umask 077; mkdir -p ~/.ssh && touch ~/.ssh/authorized_keys && \
+{{ grep -qxF {key} ~/.ssh/authorized_keys || printf '%s\\n' {key} >> ~/.ssh/authorized_keys; }} && \
+{{ command -v restorecon >/dev/null 2>&1 && restorecon -F ~/.ssh ~/.ssh/authorized_keys >/dev/null 2>&1; true; }}"
+    )
 }
 
 fn expand_tilde(path: &str) -> PathBuf {
@@ -628,6 +1040,196 @@ example.com 1024 35 1234567890
         let algs = super::expand_and_order(&["ssh-ed25519".to_string()]);
         assert!(algs.starts_with("ssh-ed25519,"));
         assert!(algs.contains("rsa-sha2-512"));
+    }
+}
+
+#[cfg(test)]
+mod host_key_tests {
+    use super::*;
+
+    fn a_host_key() -> HostKey {
+        HostKey {
+            address: "10.42.42.51".to_string(),
+            fingerprint: "SHA256:TsA++yDjGBI6RHajtLzDAcpM5B2FM8vv1KeCENzeTdQ".to_string(),
+            algorithm: "ED25519".to_string(),
+            key_type: "ssh-ed25519".to_string(),
+            key: b"a plausible key blob".to_vec(),
+        }
+    }
+
+    /// The test that matters: what we write is what our own reader matches.
+    /// A salt encoded wrongly would leave darn asking about the same host
+    /// forever, and nothing else would notice.
+    #[test]
+    fn a_written_entry_is_found_again_by_the_parser() {
+        let entry = known_hosts_entry("proxmox1", &a_host_key(), &[7u8; 20]);
+        assert!(entry.starts_with("|1|"));
+        assert_eq!(
+            stored_key_types(&entry, "proxmox1", 22),
+            ["ssh-ed25519"],
+            "hashed entry did not match the host it was written for"
+        );
+        // And it is not a match for anything else.
+        assert!(stored_key_types(&entry, "proxmox2", 22).is_empty());
+        assert!(stored_key_types(&entry, "proxmox1", 2222).is_empty());
+    }
+
+    #[test]
+    fn a_non_default_port_is_named_in_brackets() {
+        let key = a_host_key();
+        let entry = known_hosts_entry("[proxmox1]:2222", &key, &[9u8; 20]);
+        assert_eq!(stored_key_types(&entry, "proxmox1", 2222), ["ssh-ed25519"]);
+        assert!(stored_key_types(&entry, "proxmox1", 22).is_empty());
+    }
+
+    #[test]
+    fn a_new_known_hosts_gets_ssh_s_own_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join(".ssh").join("known_hosts");
+        append_known_host(&path, "|1|salt|hash ssh-ed25519 AAAA").unwrap();
+
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(path.parent().unwrap()), 0o700);
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "|1|salt|hash ssh-ed25519 AAAA\n"
+        );
+    }
+
+    /// Appending to a file whose last line has no newline must not splice the
+    /// two entries together — that would quietly invalidate both.
+    #[test]
+    fn an_unterminated_last_line_is_closed_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("known_hosts");
+        std::fs::write(&path, "existing.example.com ssh-rsa AAAAold").unwrap();
+
+        append_known_host(&path, "|1|salt|hash ssh-ed25519 AAAAnew").unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "existing.example.com ssh-rsa AAAAold\n|1|salt|hash ssh-ed25519 AAAAnew\n"
+        );
+    }
+
+    #[test]
+    fn a_key_already_trusted_elsewhere_is_reported_with_its_line() {
+        // other_names_for_key reads the real known_hosts paths, so exercise
+        // the line-matching it depends on rather than the file list.
+        let key = a_host_key();
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&key.key);
+        let entry = known_hosts_entry("proxmox1", &key, &[3u8; 20]);
+        assert!(
+            entry.ends_with(&encoded),
+            "the recorded line must carry the key verbatim for lookup to work"
+        );
+    }
+}
+
+#[cfg(test)]
+mod key_install_tests {
+    use super::*;
+
+    #[test]
+    fn the_key_is_quoted_and_written_once() {
+        let cmd = install_authorized_key_command("ssh-ed25519 AAAAC3Nz martin@laptop");
+        // Quoted, so a comment containing spaces cannot split the command.
+        assert!(cmd.contains(
+            "printf '%s\\n' 'ssh-ed25519 AAAAC3Nz martin@laptop' >> ~/.ssh/authorized_keys"
+        ));
+        // Appended only when not already there, so re-adding a host is a no-op.
+        assert!(cmd
+            .contains("grep -qxF 'ssh-ed25519 AAAAC3Nz martin@laptop' ~/.ssh/authorized_keys ||"));
+        // The directory and file exist with private permissions first.
+        assert!(cmd.starts_with("umask 077; mkdir -p ~/.ssh && touch ~/.ssh/authorized_keys &&"));
+    }
+
+    /// Run the command the way the remote shell will, against a throwaway
+    /// HOME. Nothing else executes this string locally, so a syntax slip or a
+    /// wrong mode would otherwise only show up on someone's server.
+    #[test]
+    fn the_command_writes_a_private_authorized_keys_and_repeats_cleanly() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::Command;
+
+        let home = tempfile::tempdir().unwrap();
+        let key = "ssh-ed25519 AAAAC3Nz martin@laptop";
+        let cmd = install_authorized_key_command(key);
+
+        // Twice: adding a host again must not pile up duplicate lines.
+        for run in 1..=2 {
+            let status = Command::new("sh")
+                .arg("-c")
+                .arg(&cmd)
+                .env("HOME", home.path())
+                .status()
+                .unwrap();
+            assert!(status.success(), "run {run} of the install command failed");
+        }
+
+        let ssh_dir = home.path().join(".ssh");
+        let authorized = ssh_dir.join("authorized_keys");
+        assert_eq!(
+            std::fs::read_to_string(&authorized).unwrap(),
+            format!("{key}\n")
+        );
+        let mode =
+            |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        // sshd ignores an authorized_keys file that others can read.
+        assert_eq!(mode(&ssh_dir), 0o700);
+        assert_eq!(mode(&authorized), 0o600);
+    }
+
+    #[test]
+    fn keys_already_on_the_host_are_kept() {
+        use std::process::Command;
+
+        let home = tempfile::tempdir().unwrap();
+        let ssh_dir = home.path().join(".ssh");
+        std::fs::create_dir(&ssh_dir).unwrap();
+        let authorized = ssh_dir.join("authorized_keys");
+        std::fs::write(&authorized, "ssh-rsa AAAAsomeoneelse colleague@laptop\n").unwrap();
+
+        let status = Command::new("sh")
+            .arg("-c")
+            .arg(install_authorized_key_command(
+                "ssh-ed25519 AAAAmine martin@laptop",
+            ))
+            .env("HOME", home.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        assert_eq!(
+            std::fs::read_to_string(&authorized).unwrap(),
+            "ssh-rsa AAAAsomeoneelse colleague@laptop\nssh-ed25519 AAAAmine martin@laptop\n"
+        );
+    }
+
+    #[test]
+    fn an_explicit_key_names_its_public_half() {
+        let dir = tempfile::tempdir().unwrap();
+        let private = dir.path().join("deploy_key");
+        std::fs::write(&private, "private").unwrap();
+
+        // No .pub beside it: nothing to install, and no guessing.
+        assert_eq!(default_public_key(Some(private.to_str().unwrap())), None);
+
+        let public = dir.path().join("deploy_key.pub");
+        std::fs::write(&public, "ssh-ed25519 AAAA").unwrap();
+        assert_eq!(
+            default_public_key(Some(private.to_str().unwrap())),
+            Some(public.clone())
+        );
+        // Naming the public half directly works too.
+        assert_eq!(
+            default_public_key(Some(public.to_str().unwrap())),
+            Some(public)
+        );
     }
 }
 

@@ -4,6 +4,7 @@ mod db;
 mod errors;
 mod hosts;
 mod orchestrator;
+mod password;
 mod quote;
 mod render;
 mod ssh;
@@ -189,6 +190,12 @@ enum ServerCommand {
     /// TARGET is `user@hostname`, `hostname`, or either of those with a
     /// `:port` suffix — without a user the current local user is used, and
     /// without a port 22 is used.
+    ///
+    /// At a terminal, this is the one command that will ask you about SSH
+    /// trust: it shows an unknown host key for you to accept, and offers to
+    /// install your public key on a host where none works, prompting for the
+    /// remote account's password. Both are skipped when stdin is not a
+    /// terminal.
     Add {
         #[arg(
             value_name = "[USER@]HOSTNAME[:PORT]",
