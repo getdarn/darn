@@ -256,6 +256,16 @@ pub fn remove_server(conn: &Connection, hostname: &str) -> Result<bool, DarnErro
     Ok(n > 0)
 }
 
+/// Remove every server, returning how many there were.
+///
+/// The pending patches and services of each go with it, by the cascades on
+/// their foreign keys. The command log does not: it has no key into `servers`
+/// on purpose, so `darn log` still accounts for what was run against a host
+/// after the host is gone.
+pub fn clear_servers(conn: &Connection) -> Result<usize, DarnError> {
+    Ok(conn.execute("DELETE FROM servers", [])?)
+}
+
 pub fn get_server(conn: &Connection, hostname: &str) -> Result<Option<Server>, DarnError> {
     let server = conn
         .query_row(
@@ -585,6 +595,27 @@ mod tests {
         for expected in ["servers", "pending_patches", "command_log"] {
             assert!(names.iter().any(|n| n == expected), "missing {expected}");
         }
+    }
+
+    #[test]
+    fn clear_servers_takes_their_pending_work_with_them() {
+        let (_dir, conn) = open_tmp();
+        add(&conn, "alpha");
+        add(&conn, "beta");
+        replace_pending_patches(&conn, "alpha", &[Patch::new("bash", "5.1", true)], true).unwrap();
+        replace_pending_services(&conn, "alpha", &svc(&["sshd"])).unwrap();
+        record_command(&conn, "alpha", "s1", "uptime", None, None, Some(0)).unwrap();
+
+        assert_eq!(clear_servers(&conn).unwrap(), 2);
+        assert!(list_servers(&conn).unwrap().is_empty());
+        assert_eq!(count_pending_patches(&conn, "alpha").unwrap().0, 0);
+        assert!(get_pending_services(&conn, "alpha", None)
+            .unwrap()
+            .is_empty());
+        // The audit trail is deliberately not cascaded away.
+        assert_eq!(get_last_session_commands(&conn, "alpha").unwrap().len(), 1);
+
+        assert_eq!(clear_servers(&conn).unwrap(), 0);
     }
 
     #[test]

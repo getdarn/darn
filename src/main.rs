@@ -7,6 +7,7 @@ mod orchestrator;
 mod password;
 mod quote;
 mod render;
+mod serverfile;
 mod ssh;
 mod target;
 
@@ -229,6 +230,57 @@ enum ServerCommand {
     },
     /// List all managed servers.
     List,
+
+    /// Write the server list to a YAML file.
+    ///
+    /// The file holds configuration only — the host, its SSH user, port and
+    /// key path, its type, and whether it is held back from 'all'. Pending
+    /// patches, reboot verdicts and the command log stay in the database,
+    /// because they are discovered state rather than something you decided.
+    ///
+    /// FILE may be `-` to write to standard output.
+    Export {
+        #[arg(
+            value_name = "FILE",
+            add = ArgValueCompleter::new(PathCompleter::file())
+        )]
+        file: PathBuf,
+    },
+
+    /// Read a server list back from a YAML file.
+    ///
+    /// This is offline: it never connects to the hosts, and takes their type
+    /// and distribution from the file. Run `darn update` afterwards to find
+    /// out what they actually need.
+    ///
+    /// Servers already in the list are updated, and ones the file does not
+    /// mention are left alone unless --replace is given.
+    ///
+    /// FILE may be `-` to read from standard input.
+    Import {
+        #[arg(
+            value_name = "FILE",
+            add = ArgValueCompleter::new(PathCompleter::file())
+        )]
+        file: PathBuf,
+        /// Remove servers the file does not list, so the list matches it exactly.
+        #[arg(long)]
+        replace: bool,
+        /// Do not ask before removing servers. Only --replace removes any.
+        #[arg(short, long)]
+        yes: bool,
+    },
+
+    /// Clear the server list.
+    ///
+    /// Each server's pending patches and reboot state go with it. The command
+    /// log does not: `darn log` still shows what was run against a host after
+    /// the host is gone.
+    Reset {
+        /// Do not ask for confirmation.
+        #[arg(short, long)]
+        yes: bool,
+    },
 }
 
 /// The tri-state --no-all/--all pair: unset keeps the stored value.
@@ -269,6 +321,11 @@ fn run(cli: Cli) -> Result<i32, DarnError> {
                 commands::server::set(db, &hostname, no_all.value())
             }
             ServerCommand::List => commands::server::list(db),
+            ServerCommand::Export { file } => commands::server::export(db, &file),
+            ServerCommand::Import { file, replace, yes } => {
+                commands::server::import(db, &file, replace, yes)
+            }
+            ServerCommand::Reset { yes } => commands::server::reset(db, yes),
         },
         Command::Update { jobs } => commands::update::run(db, jobs),
         Command::Upgrade {

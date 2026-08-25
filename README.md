@@ -125,6 +125,15 @@ modifying it, and stays silent if there is no database yet.
   unknown host key, and to install your public key where none works
   (see [SSH behaviour](#ssh-behaviour)).
 - `darn server remove|set|list`
+- `darn server export FILE` — write the server list to FILE as YAML, or to
+  standard output for `-`. See [the server file](#the-server-file).
+- `darn server import FILE [--replace] [-y]` — read a server list back, adding
+  hosts that are new and refreshing ones already there. Hosts the file does not
+  mention are left alone unless `--replace` is given, which makes the list match
+  the file exactly and asks before removing anything. FILE may be `-` for
+  standard input.
+- `darn server reset [-y]` — clear the server list. Asks first unless `-y` is
+  given.
 - `darn update [-j N]` — probe every host (including `--no-all` ones) and
   record pending patches, reboot state, and stale services.
 - `darn upgrade TARGET [--security|--non-security] [-j N] [--include-no-all]`
@@ -195,6 +204,47 @@ darn --db ~/.local/share/darn3/darn3.db status
 
 darn does not migrate the default darn3 path automatically; copy the file or
 pass `--db` if you want to keep using it.
+
+## The server file
+
+`darn server export` and `darn server import` move the server list in and out
+of a YAML file, so it can be backed up, reviewed in a diff, kept in version
+control, or copied to another machine:
+
+```yaml
+version: 1
+servers:
+- hostname: web-01
+  ssh_user: admin
+  ssh_port: 2222
+  ssh_key_path: ~/.ssh/id_ed25519
+  host_type: debian
+  distribution: Ubuntu 24.04
+  no_all: false
+```
+
+The file holds configuration only — what you told darn about a host. Pending
+patches, reboot verdicts and the command log stay in the database, because they
+are discovered state rather than something you decided. Nothing secret is in
+there either: a private key's path, never its contents.
+
+Only `hostname` and `host_type` are required, so a file can be written by hand.
+`ssh_user` defaults to the current local user, `ssh_port` to 22, and `no_all` to
+false — the same defaults `darn server add` uses. `host_type` must be one darn
+supports (`debian`, `redhat` or `mikrotik`). Hosts are written in hostname
+order, so re-exporting an unchanged fleet gives a byte-identical file.
+
+Importing is entirely offline: it never connects to the hosts, and believes
+what the file says about them. Run `darn update` afterwards to find out what
+they actually need. A file that does not parse, names an unknown host type, or
+lists a host twice is refused as a whole and changes nothing.
+
+To replace one machine's list with another's exactly:
+
+```sh
+darn server export fleet.yaml            # on the machine that has the list
+darn server import --replace fleet.yaml  # on the machine that wants it
+```
 
 ## Development
 

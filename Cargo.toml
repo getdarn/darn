@@ -35,6 +35,10 @@ indicatif = "0.18"
 libc = "0.2"
 regex = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+# The maintained fork of serde_yaml, which its author archived in 2024. Same
+# API, same unsafe-libyaml parser underneath.
+serde_norway = "0.9"
 ssh2 = { version = "0.9", features = ["vendored-openssl"] }
 thiserror = "1"
 uuid = { version = "1", features = ["v4"] }
