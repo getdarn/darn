@@ -139,7 +139,8 @@ fn restart_parts(
         parts.push(("yellow", format!("{actionable} services")));
     }
     if deferred > 0 {
-        // Declined by the host's own restart policy: shown, but not outstanding.
+        // Declined by the host's own restart policy: still stale, so still
+        // worth showing, but not work `restartservices` will pick up unbidden.
         parts.push(("dim", format!("{deferred} deferred")));
     }
     parts
@@ -210,7 +211,13 @@ pub fn render_status(conn: &Connection, servers: &[Server], show_all: bool) {
         let patches = db::get_pending_patches(conn, &s.hostname).unwrap_or_default();
         let needs_reboot = s.reboot_required.as_deref() == Some("yes");
         let services = db::get_pending_services(conn, &s.hostname, Some(false)).unwrap_or_default();
-        if patches.is_empty() && !needs_reboot && services.is_empty() && !show_all {
+        let deferred = db::get_pending_services(conn, &s.hostname, Some(true)).unwrap_or_default();
+        if patches.is_empty()
+            && !needs_reboot
+            && services.is_empty()
+            && deferred.is_empty()
+            && !show_all
+        {
             continue;
         }
         shown += 1;
@@ -271,6 +278,10 @@ pub fn render_status(conn: &Connection, servers: &[Server], show_all: bool) {
         }
         if !services.is_empty() {
             lines.push(dim(&services.join(" ")));
+        }
+        if !deferred.is_empty() {
+            // Labelled, so two runs of unit names cannot be read as one list.
+            lines.push(dim(&format!("deferred: {}", deferred.join(" "))));
         }
 
         let state = if s.last_update_at.is_some() && s.last_update_ok == Some(0) {

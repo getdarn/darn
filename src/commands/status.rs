@@ -26,7 +26,8 @@ pub fn run(db_path: Option<&Path>, plain: bool, show_all: bool) -> Result<i32, D
         let patches = db::get_pending_patches(&conn, &s.hostname)?;
         let needs_reboot = s.reboot_required.as_deref() == Some("yes");
         let services = db::get_pending_services(&conn, &s.hostname, Some(false))?;
-        if patches.is_empty() && !needs_reboot && services.is_empty() {
+        let deferred = db::get_pending_services(&conn, &s.hostname, Some(true))?;
+        if patches.is_empty() && !needs_reboot && services.is_empty() && deferred.is_empty() {
             if show_all {
                 println!("{}: {}", s.hostname, idle_state(s));
             }
@@ -62,6 +63,14 @@ pub fn run(db_path: Option<&Path>, plain: bool, show_all: bool) -> Result<i32, D
         if !services.is_empty() {
             println!("{}: {} services need restart", s.hostname, services.len());
             println!("   {}", services.join(" "));
+        }
+        if !deferred.is_empty() {
+            println!(
+                "{}: {} services deferred by host policy",
+                s.hostname,
+                deferred.len()
+            );
+            println!("   {}", deferred.join(" "));
         }
     }
     Ok(0)

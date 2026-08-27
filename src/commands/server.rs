@@ -399,7 +399,9 @@ fn ensure_privileges<'a>(
     let account = format!("{ssh_user}@{hostname}");
     println!(
         "{}",
-        yellow(&format!("{account} doesn't allow passwordless sudo, which darn requires."))
+        yellow(&format!(
+            "{account} doesn't allow passwordless sudo, which darn requires."
+        ))
     );
 
     if !stdin_is_terminal() {
@@ -459,9 +461,7 @@ fn ensure_privileges<'a>(
         // The SSH password is usually the sudo password too, but not always —
         // so it is offered to sudo rather than assumed to work.
         Some(known) if sudo_password_works(session, known)? => known.clone(),
-        _ => {
-            ask_sudo_password(session, &account)?
-        }
+        _ => ask_sudo_password(session, &account)?,
     };
 
     session
