@@ -80,10 +80,6 @@ pub fn bold(s: &str) -> String {
     style(s).bold().to_string()
 }
 
-pub fn cyan(s: &str) -> String {
-    style(s).cyan().to_string()
-}
-
 fn paint(colour: &str, s: &str) -> String {
     match colour {
         "red" => red(s),
@@ -372,95 +368,71 @@ fn center_title(title: &str, table: &Table) -> String {
     format!("{}{title}", " ".repeat(pad))
 }
 
-pub fn render_log(hostname: &str, commands: &[LoggedCommand]) {
+pub fn render_log(server: &Server, commands: &[LoggedCommand]) {
     if commands.is_empty() {
-        println!("{}", yellow(&format!("No logged commands for {hostname}.")));
+        println!(
+            "{}",
+            yellow(&format!("No logged commands for {}.", server.hostname))
+        );
         return;
     }
-    let width = terminal_width();
-    rule(&format!("Last session for {hostname}"), width);
-    for cmd in commands {
+    print!("{}", log_transcript(server, commands));
+}
+
+/// The recorded session as a shell transcript: a prompt line per command,
+/// followed by that command's output as the command itself printed it.
+///
+/// No framing around the output. A box would have to wrap long lines to keep
+/// its right-hand border straight, and the whole point of this view is to show
+/// what the remote command actually said — including where it chose to break
+/// its own lines — in a form that survives being piped or copied.
+///
+/// stdout is printed before stderr because that is all the ordering the log
+/// preserves: the two streams go to separate columns, so their true
+/// interleaving is gone by the time it is read back.
+fn log_transcript(server: &Server, commands: &[LoggedCommand]) -> String {
+    let mut out = String::new();
+    for (i, cmd) in commands.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        // A non-zero exit is worth saying out loud; a zero one is what the
+        // absence of an error already means.
+        let exit = match cmd.exit_code {
+            Some(code) if code != 0 => format!(", exit {code}"),
+            _ => String::new(),
+        };
         let header = format!(
-            "{}  exit={}  at {}",
-            bold(&cmd.command),
-            cmd.exit_code.map_or("None".to_string(), |c| c.to_string()),
+            "{}@{} # {} (at {}{exit})",
+            server.ssh_user,
+            server.hostname,
+            cmd.command.trim_end(),
             format_local_datetime(Some(&cmd.run_at)),
         );
-        let mut body_parts: Vec<String> = Vec::new();
-        if let Some(stdout) = cmd.stdout.as_deref().filter(|s| !s.is_empty()) {
-            body_parts.push(format!("{}:\n{}", green("stdout"), stdout.trim_end()));
+        // Bold per line, for the reason the stderr below is coloured per line:
+        // a multi-line command's prompt is several lines, and each has to
+        // close what it opened.
+        for line in header.lines() {
+            out.push_str(&bold(line));
+            out.push('\n');
         }
-        if let Some(stderr) = cmd.stderr.as_deref().filter(|s| !s.is_empty()) {
-            body_parts.push(format!("{}:\n{}", red("stderr"), stderr.trim_end()));
-        }
-        let body = if body_parts.is_empty() {
-            "(no output)".to_string()
-        } else {
-            body_parts.join("\n\n")
-        };
-        panel(&header, &body, width);
-    }
-}
-
-fn terminal_width() -> usize {
-    let (_rows, cols) = console::Term::stdout().size();
-    if cols == 0 {
-        80
-    } else {
-        cols as usize
-    }
-}
-
-/// A horizontal rule with a centred title, like rich's Console.rule.
-fn rule(title: &str, width: usize) {
-    let text_width = console::measure_text_width(title) + 2;
-    if text_width >= width {
-        println!("{title}");
-        return;
-    }
-    let left = (width - text_width) / 2;
-    let right = width - text_width - left;
-    println!(
-        "{} {} {}",
-        cyan(&"─".repeat(left)),
-        bold(title),
-        cyan(&"─".repeat(right)),
-    );
-}
-
-/// A rounded box with the header in the top border, like rich's Panel.
-fn panel(header: &str, body: &str, width: usize) {
-    let inner = width.saturating_sub(4).max(20);
-    let top_header: String = if console::measure_text_width(header) > inner.saturating_sub(2) {
-        console::truncate_str(header, inner.saturating_sub(3), "…").into_owned()
-    } else {
-        header.to_string()
-    };
-    let header_width = console::measure_text_width(&top_header);
-    let dashes = inner.saturating_sub(header_width + 1);
-    println!(
-        "{} {} {}{}",
-        cyan("╭─"),
-        top_header,
-        cyan(&"─".repeat(dashes)),
-        cyan("╮"),
-    );
-    for raw in body.lines() {
-        let mut line = raw.to_string();
-        loop {
-            let visible = console::measure_text_width(&line);
-            if visible <= inner {
-                let pad = inner - visible;
-                println!("{} {}{} {}", cyan("│"), line, " ".repeat(pad), cyan("│"));
-                break;
+        if let Some(stdout) = cmd.stdout.as_deref().filter(|s| !s.trim_end().is_empty()) {
+            for line in stdout.trim_end().lines() {
+                out.push_str(line);
+                out.push('\n');
             }
-            let head = console::truncate_str(&line, inner, "").into_owned();
-            let taken = head.len();
-            println!("{} {} {}", cyan("│"), head, cyan("│"));
-            line = line[taken..].to_string();
+        }
+        if let Some(stderr) = cmd.stderr.as_deref().filter(|s| !s.trim_end().is_empty()) {
+            // Coloured line by line rather than as a block: the reset then
+            // lands before each newline, which is what keeps the colour from
+            // bleeding across lines in a pager.
+            for line in stderr.trim_end().lines() {
+                out.push_str(&red(line));
+                out.push('\n');
+            }
         }
     }
-    println!("{}{}{}", cyan("╰"), cyan(&"─".repeat(inner + 2)), cyan("╯"));
+    out
 }
 
 #[cfg(test)]
@@ -523,5 +495,96 @@ mod tests {
         let (first, second) = text.split_at(3);
         let (out, _) = capture(vec![OutEvent::Stdout(first), OutEvent::Stdout(second)]);
         assert_eq!(out, "é×日\n");
+    }
+
+    fn server() -> Server {
+        Server {
+            hostname: "web-01".to_string(),
+            ssh_user: "admin".to_string(),
+            ssh_port: 22,
+            ssh_key_path: None,
+            host_type: "apt".to_string(),
+            distribution: None,
+            last_update_at: None,
+            last_update_ok: None,
+            reboot_required: None,
+            reboot_detail: None,
+            no_all: false,
+        }
+    }
+
+    fn logged(command: &str, stdout: &str, stderr: &str, exit_code: i64) -> LoggedCommand {
+        LoggedCommand {
+            command: command.to_string(),
+            stdout: Some(stdout.to_string()),
+            stderr: Some(stderr.to_string()),
+            exit_code: Some(exit_code),
+            run_at: "2026-08-27T13:05:31+00:00".to_string(),
+        }
+    }
+
+    #[test]
+    fn a_command_reads_as_a_prompt_line_over_its_own_output() {
+        let out = log_transcript(
+            &server(),
+            &[logged("apt-get update", "Hit:1 http://deb.debian.org\n", "", 0)],
+        );
+        let lines: Vec<&str> = out.lines().collect();
+        assert!(lines[0].contains("admin@web-01 # apt-get update (at "), "{out:?}");
+        assert_eq!(lines[1], "Hit:1 http://deb.debian.org");
+        // Nothing is framed any more, and a clean run says nothing about exit.
+        assert!(!out.contains('│') && !out.contains('╭'), "{out:?}");
+        assert!(!out.contains("exit"), "{out:?}");
+    }
+
+    #[test]
+    fn a_failure_carries_its_exit_code_and_its_stderr_last() {
+        let out = log_transcript(
+            &server(),
+            &[logged(
+                "apt-get upgrade",
+                "Reading package lists...\n",
+                "E: Could not get lock\n",
+                100,
+            )],
+        );
+        let lines: Vec<&str> = out.lines().collect();
+        assert!(lines[0].contains(", exit 100)"), "{out:?}");
+        assert!(lines[1].contains("Reading package lists..."), "{out:?}");
+        assert!(lines[2].contains("E: Could not get lock"), "{out:?}");
+    }
+
+    #[test]
+    fn multi_line_stderr_stays_one_line_per_line() {
+        // Each line is styled separately, so each must still arrive as its own
+        // line — the colouring must not fold or drop any of them.
+        let out = log_transcript(&server(), &[logged("probe", "", "one\ntwo\n", 1)]);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 3, "{out:?}");
+        assert!(lines[1].contains("one"), "{out:?}");
+        assert!(lines[2].contains("two"), "{out:?}");
+    }
+
+    #[test]
+    fn a_multi_line_command_is_kept_whole() {
+        // The opposite of the streaming sink: this is the archival view, so
+        // the whole script is there to be read.
+        let script = "sudo -n -- sh -c 'export LC_ALL=C\necho \"### MARKER\"\nuname -r'";
+        let out = log_transcript(&server(), &[logged(script, "6.1.0-18-amd64\n", "", 0)]);
+        assert!(out.contains("### MARKER"), "{out:?}");
+        assert!(out.contains("uname -r'"), "{out:?}");
+    }
+
+    #[test]
+    fn commands_are_separated_by_a_blank_line_and_empty_output_is_just_a_prompt() {
+        let out = log_transcript(
+            &server(),
+            &[logged("true", "", "", 0), logged("false", "", "", 1)],
+        );
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 3, "{out:?}");
+        assert!(lines[0].contains("# true"), "{out:?}");
+        assert_eq!(lines[1], "");
+        assert!(lines[2].contains("# false"), "{out:?}");
     }
 }
