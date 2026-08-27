@@ -13,7 +13,7 @@ impl HostHandler for MikrotikHandler {
     }
 
     fn matches(&self, session: &mut SshSession<'_>) -> Result<bool, DarnError> {
-        let res = session.run("/system resource print", false, false)?;
+        let res = session.probe("/system resource print", false, false)?;
         if res.exit_code != 0 {
             return Ok(false);
         }
@@ -21,12 +21,12 @@ impl HostHandler for MikrotikHandler {
     }
 
     fn identify(&self, session: &mut SshSession<'_>) -> Result<String, DarnError> {
-        let res = session.run("/system resource print", false, false)?;
+        let res = session.probe("/system resource print", false, false)?;
         Ok(parse_mikrotik_identity(&res.stdout))
     }
 
     fn discover(&self, session: &mut SshSession<'_>) -> Result<Vec<Patch>, DarnError> {
-        let res = session.run("/system package update check-for-updates", false, true)?;
+        let res = session.probe("/system package update check-for-updates", false, true)?;
         Ok(parse_mikrotik_check(&res.stdout))
     }
 

@@ -313,6 +313,39 @@ pub fn render_status(conn: &Connection, servers: &[Server], show_all: bool) {
     println!("{table}");
 }
 
+/// Show what a dry run would have issued, per host.
+///
+/// Not a table: a sudo-wrapped `sh -c '...'` is long enough that a cell would
+/// wrap it into something you could not copy, paste or read, and the point of
+/// the output is that you can check it line by line against what you expected.
+/// `message` carries one command per line, as the work closure assembled it.
+pub fn render_plan(title: &str, results: &[HostResult]) {
+    println!("{}", bold(title));
+    for r in results {
+        println!();
+        if !r.ok {
+            println!("{} {}", bold(&r.hostname), red("— no plan"));
+            for line in r.message.lines() {
+                println!("  {}", red(line));
+            }
+            continue;
+        }
+        println!("{}", bold(&r.hostname));
+        if r.message.trim().is_empty() {
+            println!("  {}", dim("nothing to do"));
+            continue;
+        }
+        for line in r.message.lines() {
+            println!("  {} {line}", dim("$"));
+        }
+    }
+    println!();
+    println!(
+        "{}",
+        yellow("Dry run: nothing above was issued. Read-only probes were run.")
+    );
+}
+
 pub fn render_results(title: &str, results: &[HostResult]) {
     let mut table = new_table();
     table.set_header(["Hostname", "Status", "Message"]);

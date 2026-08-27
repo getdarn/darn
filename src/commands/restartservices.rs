@@ -9,7 +9,7 @@ use crate::db::{self, Server};
 use crate::errors::DarnError;
 use crate::hosts::get_handler;
 use crate::orchestrator::{run_parallel, HostResult};
-use crate::render::{bold, dim, green, red, render_results, yellow};
+use crate::render::{bold, dim, green, red, render_plan, render_results, yellow};
 use crate::ssh::SshSession;
 
 pub fn run(
@@ -19,6 +19,7 @@ pub fn run(
     yes: bool,
     force: bool,
     include_no_all: bool,
+    dry_run: bool,
 ) -> Result<i32, DarnError> {
     let conn = db::open_db(db_path)?;
 
@@ -71,7 +72,7 @@ host's own restart policy declined them; pass --force to restart them anyway"
         db::get_pending_services(conn, hostname, if force { None } else { Some(false) })
     };
 
-    if !yes {
+    if !yes && !dry_run {
         println!("About to restart:");
         for s in &servers {
             println!(
@@ -102,10 +103,16 @@ bouncing them disrupts running sessions."
                 session: &mut SshSession<'_>,
                 thread_conn: &rusqlite::Connection|
      -> HostResult {
+        session.set_dry_run(dry_run);
         let mut attempt = || -> Result<String, DarnError> {
             let handler = get_handler(&server.host_type)?;
             let units = units_for(thread_conn, &server.hostname)?;
             handler.restart_services(session, &units, force)?;
+            if dry_run {
+                // Re-probing would find every unit still stale and mark the
+                // lot deferred, which is a lie about a restart never attempted.
+                return Ok(session.take_plan().join("\n"));
+            }
             // Re-probe rather than assuming: local policy may have declined some.
             let restarts = record_restart_state(thread_conn, server, handler, session)?;
             let declined: Vec<String> = units
@@ -155,6 +162,10 @@ bouncing them disrupts running sessions."
     } else {
         format!("restartservices {target}")
     };
-    render_results(&title, &results);
+    if dry_run {
+        render_plan(&format!("{title} — dry run"), &results);
+    } else {
+        render_results(&title, &results);
+    }
     Ok(batch_exit_code(&results))
 }

@@ -75,7 +75,7 @@ impl HostHandler for AptHandler {
     }
 
     fn matches(&self, session: &mut SshSession<'_>) -> Result<bool, DarnError> {
-        let res = session.run("cat /etc/os-release 2>/dev/null || true", false, false)?;
+        let res = session.probe("cat /etc/os-release 2>/dev/null || true", false, false)?;
         if res.exit_code != 0 || res.stdout.is_empty() {
             return Ok(false);
         }
@@ -88,13 +88,13 @@ impl HostHandler for AptHandler {
     }
 
     fn identify(&self, session: &mut SshSession<'_>) -> Result<String, DarnError> {
-        let res = session.run("cat /etc/os-release 2>/dev/null || true", false, false)?;
+        let res = session.probe("cat /etc/os-release 2>/dev/null || true", false, false)?;
         Ok(identify_from_os_release(&res.stdout, "Debian-based"))
     }
 
     fn discover(&self, session: &mut SshSession<'_>) -> Result<Vec<Patch>, DarnError> {
         self.apt_update(session)?;
-        let res = session.run(
+        let res = session.probe(
             "LC_ALL=C apt-get -s -o Debug::NoLocking=true dist-upgrade",
             true,
             true,
@@ -156,7 +156,7 @@ impl HostHandler for AptHandler {
     }
 
     fn check_restarts(&self, session: &mut SshSession<'_>) -> Result<RestartCheck, DarnError> {
-        let res = session.run(&REBOOT_PROBE, true, false)?;
+        let res = session.probe(&REBOOT_PROBE, true, false)?;
         Ok(parse_debian_restarts(&res.stdout))
     }
 

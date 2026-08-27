@@ -62,7 +62,7 @@ pub struct RedHatHandler;
 
 impl RedHatHandler {
     fn pm(&self, session: &mut SshSession<'_>) -> Result<String, DarnError> {
-        let res = session.run(
+        let res = session.probe(
             "command -v dnf >/dev/null 2>&1 && echo dnf || echo yum",
             false,
             false,
@@ -82,7 +82,7 @@ impl HostHandler for RedHatHandler {
     }
 
     fn matches(&self, session: &mut SshSession<'_>) -> Result<bool, DarnError> {
-        let res = session.run("cat /etc/os-release 2>/dev/null || true", false, false)?;
+        let res = session.probe("cat /etc/os-release 2>/dev/null || true", false, false)?;
         if res.exit_code != 0 || res.stdout.is_empty() {
             return Ok(false);
         }
@@ -95,14 +95,14 @@ impl HostHandler for RedHatHandler {
     }
 
     fn identify(&self, session: &mut SshSession<'_>) -> Result<String, DarnError> {
-        let res = session.run("cat /etc/os-release 2>/dev/null || true", false, false)?;
+        let res = session.probe("cat /etc/os-release 2>/dev/null || true", false, false)?;
         Ok(identify_from_os_release(&res.stdout, "RedHat-based"))
     }
 
     fn discover(&self, session: &mut SshSession<'_>) -> Result<Vec<Patch>, DarnError> {
         let pm = self.pm(session)?;
         // check-update exits 100 when updates are available, 0 when none, >0 on error.
-        let check = session.run(&format!("LC_ALL=C {pm} -q check-update"), false, false)?;
+        let check = session.probe(&format!("LC_ALL=C {pm} -q check-update"), false, false)?;
         if check.exit_code != 0 && check.exit_code != 100 {
             return Err(DarnError::Ssh(format!(
                 "{pm} check-update failed ({}): {}",
@@ -111,7 +111,7 @@ impl HostHandler for RedHatHandler {
         }
         let all_patches = parse_dnf_check_update(&check.stdout);
 
-        let sec = session.run(
+        let sec = session.probe(
             &format!("LC_ALL=C {pm} -q updateinfo list --security 2>/dev/null || true"),
             false,
             false,
@@ -168,7 +168,7 @@ impl HostHandler for RedHatHandler {
     fn check_restarts(&self, session: &mut SshSession<'_>) -> Result<RestartCheck, DarnError> {
         let pm = self.pm(session)?;
         let probe = REBOOT_PROBE.replace("{pm}", &pm);
-        let res = session.run(&probe, true, false)?;
+        let res = session.probe(&probe, true, false)?;
         Ok(parse_redhat_restarts(&res.stdout))
     }
 

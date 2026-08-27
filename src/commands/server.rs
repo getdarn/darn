@@ -526,10 +526,10 @@ fn ensure_privileges<'a>(
 /// installed — and because the account being added is not always called
 /// `root` when it is root.
 fn has_passwordless_sudo(session: &mut SshSession<'_>) -> Result<bool, DarnError> {
-    if session.run("id -u", false, false)?.stdout.trim() == "0" {
+    if session.probe("id -u", false, false)?.stdout.trim() == "0" {
         return Ok(true);
     }
-    Ok(session.run("sudo -n true", false, false)?.exit_code == 0)
+    Ok(session.probe("sudo -n true", false, false)?.exit_code == 0)
 }
 
 /// Ask for a password until sudo accepts one, as sudo itself asks.

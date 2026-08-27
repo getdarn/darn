@@ -7,7 +7,7 @@ use crate::db::{self, Server};
 use crate::errors::DarnError;
 use crate::hosts::get_handler;
 use crate::orchestrator::{run_parallel, HostResult};
-use crate::render::{green, render_results, restart_suffix, stream_to_terminal};
+use crate::render::{green, render_plan, render_results, restart_suffix, stream_to_terminal};
 use crate::ssh::SshSession;
 
 /// How many patches this run would actually install on a host.
@@ -38,6 +38,7 @@ pub fn run(
     security: bool,
     non_security: bool,
     include_no_all: bool,
+    dry_run: bool,
 ) -> Result<i32, DarnError> {
     if security && non_security {
         return Err(DarnError::Usage(
@@ -84,7 +85,9 @@ pub fn run(
     // One named host has the terminal to itself, so there is no reason to
     // withhold what it prints until the end. Under 'all' the hosts would be
     // interleaving, and the progress bar is the more readable summary.
-    let stream = target != "all";
+    // A dry run has nothing of its own to stream, and letting the probes it
+    // runs print would bury the plan in their output.
+    let stream = target != "all" && !dry_run;
     let session_id = session_id();
 
     let work = |server: &Server,
@@ -94,10 +97,16 @@ pub fn run(
         if stream {
             session.set_output_sink(Some(stream_to_terminal()));
         }
+        session.set_dry_run(dry_run);
         let mut attempt = || -> Result<String, DarnError> {
             let handler = get_handler(&server.host_type)?;
             let known = db::get_pending_patches(thread_conn, &server.hostname)?;
             handler.upgrade(session, security, non_security, &known)?;
+            if dry_run {
+                // Stop here: re-discovering and recording would overwrite what
+                // the database says about a host nothing has been done to.
+                return Ok(session.take_plan().join("\n"));
+            }
             match handler.discover(session) {
                 Ok(patches) => {
                     db::replace_pending_patches(thread_conn, &server.hostname, &patches, true)?;
@@ -137,7 +146,11 @@ pub fn run(
     } else {
         format!("upgrade {target}")
     };
-    render_results(&title, &results);
+    if dry_run {
+        render_plan(&format!("{title} — dry run"), &results);
+    } else {
+        render_results(&title, &results);
+    }
     Ok(batch_exit_code(&results))
 }
 

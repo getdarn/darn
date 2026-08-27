@@ -8,7 +8,7 @@ use crate::db::{self, Server};
 use crate::errors::DarnError;
 use crate::hosts::{get_handler, Reboot, RestartCheck};
 use crate::orchestrator::{run_parallel, HostResult};
-use crate::render::{bold, green, render_results, restart_suffix, yellow};
+use crate::render::{bold, green, render_plan, render_results, restart_suffix, yellow};
 use crate::ssh::{Recorder, SshSession};
 
 pub const BOOT_ID_CMD: &str = "cat /proc/sys/kernel/random/boot_id 2>/dev/null || true";
@@ -53,7 +53,7 @@ fn wait_for_reboot(
                 POLL_CONNECT_TIMEOUT,
             )?;
             let boot_id = session
-                .run(BOOT_ID_CMD, false, false)?
+                .probe(BOOT_ID_CMD, false, false)?
                 .stdout
                 .trim()
                 .to_string();
@@ -100,6 +100,7 @@ pub fn run(
     wait: bool,
     timeout: f64,
     include_no_all: bool,
+    dry_run: bool,
 ) -> Result<i32, DarnError> {
     let conn = db::open_db(db_path)?;
 
@@ -144,7 +145,7 @@ run `darn update` first, or pass --force"
         (vec![single], format!("Rebooting {target}"))
     };
 
-    if !yes {
+    if !yes && !dry_run {
         println!("About to reboot:");
         for s in &servers {
             let reason = s
@@ -167,14 +168,20 @@ run `darn update` first, or pass --force"
                 session: &mut SshSession<'_>,
                 thread_conn: &rusqlite::Connection|
      -> HostResult {
+        session.set_dry_run(dry_run);
         let mut attempt = || -> Result<String, DarnError> {
             let handler = get_handler(&server.host_type)?;
             let previous_boot_id = session
-                .run(BOOT_ID_CMD, false, false)?
+                .probe(BOOT_ID_CMD, false, false)?
                 .stdout
                 .trim()
                 .to_string();
             handler.reboot(session)?;
+            if dry_run {
+                // Nothing went down, so there is nothing to wait for and no
+                // reboot flag to clear.
+                return Ok(session.take_plan().join("\n"));
+            }
             if !wait {
                 // State is unknowable until it is back; do not leave a stale flag.
                 db::set_reboot_state(thread_conn, &server.hostname, None, None)?;
@@ -226,6 +233,10 @@ run `darn update` first, or pass --force"
     } else {
         format!("reboot {target}")
     };
-    render_results(&title, &results);
+    if dry_run {
+        render_plan(&format!("{title} — dry run"), &results);
+    } else {
+        render_results(&title, &results);
+    }
     Ok(batch_exit_code(&results))
 }

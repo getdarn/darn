@@ -76,6 +76,12 @@ enum Command {
         /// Also include hosts marked --no-all.
         #[arg(long)]
         include_no_all: bool,
+        /// Show the commands each host would be sent, without issuing them.
+        ///
+        /// Connects and runs read-only probes only; nothing on the host and
+        /// nothing in darn's own database is changed.
+        #[arg(long)]
+        dry_run: bool,
     },
 
     /// Reboot TARGET (a hostname, or the literal 'all').
@@ -108,6 +114,12 @@ enum Command {
         /// Also include hosts marked --no-all.
         #[arg(long)]
         include_no_all: bool,
+        /// Show the commands each host would be sent, without issuing them.
+        ///
+        /// Connects and runs read-only probes only; nothing on the host and
+        /// nothing in darn's own database is changed.
+        #[arg(long)]
+        dry_run: bool,
     },
 
     /// Restart stale services on TARGET (a hostname, or the literal 'all').
@@ -131,6 +143,12 @@ enum Command {
         /// Also include hosts marked --no-all.
         #[arg(long)]
         include_no_all: bool,
+        /// Show the commands each host would be sent, without issuing them.
+        ///
+        /// Connects and runs read-only probes only; nothing on the host and
+        /// nothing in darn's own database is changed.
+        #[arg(long)]
+        dry_run: bool,
     },
 
     /// Open an interactive SSH shell on HOSTNAME.
@@ -336,7 +354,16 @@ fn run(cli: Cli) -> Result<i32, DarnError> {
             security,
             non_security,
             include_no_all,
-        } => commands::upgrade::run(db, &target, jobs, security, non_security, include_no_all),
+            dry_run,
+        } => commands::upgrade::run(
+            db,
+            &target,
+            jobs,
+            security,
+            non_security,
+            include_no_all,
+            dry_run,
+        ),
         Command::Reboot {
             target,
             jobs,
@@ -346,6 +373,7 @@ fn run(cli: Cli) -> Result<i32, DarnError> {
             no_wait,
             timeout,
             include_no_all,
+            dry_run,
         } => commands::reboot::run(
             db,
             &target,
@@ -355,6 +383,7 @@ fn run(cli: Cli) -> Result<i32, DarnError> {
             !no_wait,
             timeout,
             include_no_all,
+            dry_run,
         ),
         Command::Restartservices {
             target,
@@ -362,7 +391,8 @@ fn run(cli: Cli) -> Result<i32, DarnError> {
             yes,
             force,
             include_no_all,
-        } => commands::restartservices::run(db, &target, jobs, yes, force, include_no_all),
+            dry_run,
+        } => commands::restartservices::run(db, &target, jobs, yes, force, include_no_all, dry_run),
         Command::Shell { hostname } => commands::shell::run(db, &hostname),
         Command::Log { hostname } => commands::log::run(db, &hostname),
         Command::Status { plain, show_all } => commands::status::run(db, plain, show_all),

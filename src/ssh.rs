@@ -65,6 +65,8 @@ pub struct SshSession<'a> {
     recorder: Option<Recorder<'a>>,
     sink: Option<OutputSink<'a>>,
     sess: Session,
+    dry_run: bool,
+    plan: Vec<String>,
 }
 
 /// How a session should authenticate.
@@ -162,6 +164,8 @@ impl<'a> SshSession<'a> {
             recorder,
             sink: None,
             sess,
+            dry_run: false,
+            plan: Vec::new(),
         })
     }
 
@@ -232,6 +236,32 @@ impl<'a> SshSession<'a> {
         Ok((sess, addr))
     }
 
+    /// Record commands instead of running them, for `--dry-run`.
+    ///
+    /// Only affects `run`; `probe` still goes to the host, since knowing what
+    /// darn would do to a host means looking at the host first.
+    pub fn set_dry_run(&mut self, dry_run: bool) {
+        self.dry_run = dry_run;
+    }
+
+    /// Take the commands `run` recorded rather than issued, emptying the list.
+    pub fn take_plan(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.plan)
+    }
+
+    /// Run a command that changes the host.
+    ///
+    /// Under `set_dry_run` the command is recorded into the plan and never
+    /// reaches the host: it returns as though it had succeeded silently, so
+    /// that the caller walks the same path it would have walked for real and
+    /// the rest of the plan is the rest of that path. Nothing is written to
+    /// the command log either — nothing ran, and the log is a record of what
+    /// did.
+    ///
+    /// This is the dangerous direction, so it is the one that carries the
+    /// plain name: a new call site that has not thought about dry run at all
+    /// is protected by default, and the mistake a `probe` misuse makes is
+    /// only to omit a command from a plan.
     pub fn run(
         &mut self,
         command: &str,
@@ -243,6 +273,39 @@ impl<'a> SshSession<'a> {
         } else {
             command.to_string()
         };
+        if self.dry_run {
+            self.plan.push(full_cmd.clone());
+            return Ok(CommandResult {
+                command: full_cmd,
+                exit_code: 0,
+                stdout: String::new(),
+                stderr: String::new(),
+            });
+        }
+        self.exec(&full_cmd, check)
+    }
+
+    /// Run a read-only command, dry run included.
+    ///
+    /// Probes are how a handler decides what it would do — which package
+    /// manager the host has, which units are stale — so a dry run that
+    /// skipped them could not report a plan at all.
+    pub fn probe(
+        &mut self,
+        command: &str,
+        sudo: bool,
+        check: bool,
+    ) -> Result<CommandResult, DarnError> {
+        let full_cmd = if sudo {
+            self.with_sudo(command)
+        } else {
+            command.to_string()
+        };
+        self.exec(&full_cmd, check)
+    }
+
+    fn exec(&mut self, full_cmd: &str, check: bool) -> Result<CommandResult, DarnError> {
+        let full_cmd = full_cmd.to_string();
 
         let outcome = match &self.sink {
             None => exec_buffered(&self.sess, &full_cmd, None),
