@@ -171,10 +171,11 @@ Authentication tries the explicit `--key` file, then the SSH agent, then
 `~/.ssh/id_*`. Unknown or mismatched host keys are rejected. Privilege
 escalation uses passwordless `sudo -n` (skipped when the SSH user is `root`).
 
-`darn server add` is the one command that will ask you about either, so that
-adding a host you have never touched takes one command rather than a detour
-through `ssh` and `ssh-copy-id`. Both questions are asked only when stdin is a
-terminal — `cron` runs fail as before rather than hang — and Ctrl+C cancels.
+`darn server add` is the one command that will ask you about any of this, so
+that adding a host you have never touched takes one command rather than a
+detour through `ssh`, `ssh-copy-id` and `visudo`. Every question is asked only
+when stdin is a terminal — `cron` runs fail or skip as before rather than hang
+— and Ctrl+C cancels.
 
 - **An unknown host key** is shown with its `SHA256` fingerprint, in ssh(1)'s
   own wording, and recorded in `~/.ssh/known_hosts` if you type `yes` (or paste
@@ -188,6 +189,19 @@ terminal — `cron` runs fail as before rather than hang — and Ctrl+C cancels.
   `~/.ssh/id_*.pub`) to `~/.ssh/authorized_keys` there. Every later connection
   uses the key. Hosts without a POSIX shell, such as RouterOS, need their keys
   installed with their own tools.
+- **No passwordless sudo** — the account connects fine but `sudo -n` fails —
+  offers to create a `darn` user on the host that has it. Say yes and darn
+  asks for the account's password (reusing the one you just typed, if you
+  did), then runs one `sudo` command that creates `darn`, writes
+  `darn ALL=(ALL) NOPASSWD: ALL` and installs your public key for it. The rule
+  goes to `/etc/sudoers.d/darn` where drop-ins are enabled and into
+  `/etc/sudoers` otherwise; either way the candidate file is checked with
+  `visudo -c -f` before it replaces the live one. darn then reconnects as
+  `darn`, checks `sudo -n` really works, and stores the host under that user.
+  Decline, and the host is added under the account you named — with the
+  warning that anything needing root will fail. Re-adding a provisioned host
+  changes nothing: the user, the rule and the key are each only written if
+  missing. Not offered for RouterOS, which has no sudo.
 
 Every other command still rejects a host that is not already in `known_hosts`;
 `darn server add` is where a host is vouched for.

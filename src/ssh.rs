@@ -1,4 +1,4 @@
-use std::io::{ErrorKind, Read};
+use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -245,7 +245,7 @@ impl<'a> SshSession<'a> {
         };
 
         let outcome = match &self.sink {
-            None => exec_buffered(&self.sess, &full_cmd),
+            None => exec_buffered(&self.sess, &full_cmd, None),
             Some(sink) => exec_streamed(&self.sess, &full_cmd, sink.as_ref()),
         };
         let (stdout, stderr, exit_code) =
@@ -278,6 +278,42 @@ impl<'a> SshSession<'a> {
         })
     }
 
+    /// Run a command with `stdin` written to it, for the one thing that may
+    /// not appear in a command string: a password on its way to `sudo -S`.
+    ///
+    /// No sudo wrapping — the caller builds that, since the point here is a
+    /// wrapper `with_sudo` deliberately does not offer. Never streamed
+    /// either: a sink puts what it is given on the terminal, and stdin is not
+    /// something to echo. What the recorder sees is the command, stdout,
+    /// stderr and exit code, exactly as for any other command; `stdin` is not
+    /// passed to it and so never reaches the command log.
+    pub fn run_with_stdin(
+        &mut self,
+        command: &str,
+        stdin: &str,
+        check: bool,
+    ) -> Result<CommandResult, DarnError> {
+        let (stdout, stderr, exit_code) = exec_buffered(&self.sess, command, Some(stdin))
+            .map_err(|e| DarnError::Ssh(format!("command failed to execute: {e}")))?;
+
+        if let Some(recorder) = &self.recorder {
+            recorder(command, &stdout, &stderr, exit_code as i64);
+        }
+
+        if check && exit_code != 0 {
+            return Err(DarnError::Ssh(format!(
+                "{}: command exited {exit_code}: {command}\n{stderr}",
+                self.hostname
+            )));
+        }
+        Ok(CommandResult {
+            command: command.to_string(),
+            exit_code,
+            stdout,
+            stderr,
+        })
+    }
+
     fn with_sudo(&self, command: &str) -> String {
         if self.user == "root" {
             return command.to_string();
@@ -287,9 +323,19 @@ impl<'a> SshSession<'a> {
 }
 
 /// Run a command, returning its output once it has exited.
-fn exec_buffered(sess: &Session, full_cmd: &str) -> Result<(String, String, i32), String> {
+///
+/// `stdin`, when given, is written to the command before its input is closed.
+fn exec_buffered(
+    sess: &Session,
+    full_cmd: &str,
+    stdin: Option<&str>,
+) -> Result<(String, String, i32), String> {
     let mut ch = sess.channel_session().map_err(|e| e.to_string())?;
     ch.exec(full_cmd).map_err(|e| e.to_string())?;
+    if let Some(input) = stdin {
+        ch.write_all(input.as_bytes()).map_err(|e| e.to_string())?;
+        ch.flush().map_err(|e| e.to_string())?;
+    }
     let _ = ch.send_eof();
     // libssh2 buffers the stream not currently being read, so full
     // sequential reads cannot deadlock the way raw pipes would.
@@ -951,6 +997,16 @@ pub fn install_authorized_key_command(public_key: &str) -> String {
 {{ grep -qxF {key} ~/.ssh/authorized_keys || printf '%s\\n' {key} >> ~/.ssh/authorized_keys; }} && \
 {{ command -v restorecon >/dev/null 2>&1 && restorecon -F ~/.ssh ~/.ssh/authorized_keys >/dev/null 2>&1; true; }}"
     )
+}
+
+/// Wrap `command` in a sudo that takes its password on stdin.
+///
+/// The counterpart to `with_sudo`'s `sudo -n`, for the one moment darn has a
+/// password to spend: `-S` reads it from stdin rather than a tty, and `-p ''`
+/// keeps sudo's prompt out of the stderr we report. The password stays out of
+/// the command string, and so out of the command log.
+pub fn sudo_password_command(command: &str) -> String {
+    format!("sudo -S -p '' -- sh -c {}", crate::quote::sh_quote(command))
 }
 
 fn expand_tilde(path: &str) -> PathBuf {

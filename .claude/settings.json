@@ -5,7 +5,8 @@
       "Read(//home/martin/darn3/tests/**)",
       "Bash(cargo --version)",
       "Bash(cc --version)",
-      "Bash(pkg-config --exists libssl)"
+      "Bash(pkg-config --exists libssl)",
+      "Bash(timeout 100 env -u SSH_AUTH_SOCK HOME=/tmp/claude-1000/-home-martin-rdarn/26868400-07dc-4c51-9c27-c9311c35e0d2/scratchpad/home python3 /tmp/claude-1000/-home-martin-rdarn/26868400-07dc-4c51-9c27-c9311c35e0d2/scratchpad/drive.py 'password: ' testerpw 'passwordless sudo on localhost' y -- target/debug/darn --db /tmp/claude-1000/-home-martin-rdarn/26868400-07dc-4c51-9c27-c9311c35e0d2/scratchpad/home/darn.db server add tester@localhost:2223)"
     ]
   }
 }

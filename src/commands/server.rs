@@ -9,6 +9,7 @@ use crate::errors::DarnError;
 use crate::hosts::detect::detect_type;
 use crate::hosts::get_handler;
 use crate::password::{read_password, stdin_is_terminal};
+use crate::provision::{self, DARN_USER};
 use crate::render::{bold, dim, green, render_server_list, yellow};
 use crate::serverfile;
 use crate::ssh::{self, Recorder, SshSession, DEFAULT_CONNECT_TIMEOUT};
@@ -41,18 +42,39 @@ pub fn add(
     let conn = db::open_db(db_path)?;
     let session_id = session_id();
 
-    let (host_type, distribution) = {
-        let mut session =
+    let (host_type, distribution, stored_user) = {
+        let (mut session, contact) =
             connect_to_new_host(&conn, &hostname, &ssh_user, port, key_path, &session_id)?;
         let host_type = detect_type(&mut session)?;
+
+        // RouterOS has neither sudo nor useradd, and darn never escalates on
+        // it; asking about a `darn` user there would be asking nonsense.
+        let mut stored_user = ssh_user.clone();
+        if host_type != "mikrotik" {
+            let provisioned = ensure_privileges(
+                &conn,
+                &mut session,
+                &hostname,
+                &ssh_user,
+                port,
+                key_path,
+                &session_id,
+                &contact,
+            )?;
+            if let Some(darn_session) = provisioned {
+                session = darn_session;
+                stored_user = DARN_USER.to_string();
+            }
+        }
+
         let distribution = get_handler(host_type)?.identify(&mut session)?;
-        (host_type, distribution)
+        (host_type, distribution, stored_user)
     };
 
     db::add_server(
         &conn,
         &hostname,
-        &ssh_user,
+        &stored_user,
         port,
         key_path,
         host_type,
@@ -65,11 +87,28 @@ pub fn add(
     } else {
         String::new()
     };
+    // The user is named only when it is not the one asked for, since that is
+    // the case where what was added differs from what was typed.
+    let added = if stored_user == ssh_user {
+        hostname.clone()
+    } else {
+        format!("{stored_user}@{hostname}")
+    };
     println!(
-        "{} {hostname} (type: {host_type}, distribution: {distribution}){suffix}",
+        "{} {added} (type: {host_type}, distribution: {distribution}){suffix}",
         green("Added")
     );
     Ok(0)
+}
+
+/// What settling first contact left behind, for the sudo step that follows.
+///
+/// Both fields exist to keep `server add` from asking twice for something the
+/// user has already given: the remote password, and permission to put a key
+/// on this host.
+struct FirstContact {
+    password: Option<String>,
+    key_installed: bool,
 }
 
 /// Connect to a host being added, offering to settle what an unseen host
@@ -85,9 +124,12 @@ fn connect_to_new_host<'a>(
     port: u16,
     key_path: Option<&str>,
     session_id: &'a str,
-) -> Result<SshSession<'a>, DarnError> {
+) -> Result<(SshSession<'a>, FirstContact), DarnError> {
     let mut asked_about_key = false;
-    let mut installed_key = false;
+    let mut contact = FirstContact {
+        password: None,
+        key_installed: false,
+    };
     loop {
         let attempt = SshSession::connect(
             hostname,
@@ -98,7 +140,7 @@ fn connect_to_new_host<'a>(
             DEFAULT_CONNECT_TIMEOUT,
         );
         match attempt {
-            Ok(session) => return Ok(session),
+            Ok(session) => return Ok((session, contact)),
             // Never seen this host before. Ask, the way ssh(1) asks.
             Err(DarnError::SshHostKeyUnknown(why)) if !asked_about_key => {
                 asked_about_key = true;
@@ -107,9 +149,11 @@ fn connect_to_new_host<'a>(
             // The host is reachable and its key is known; we simply have
             // nothing it accepts. Offer to put a key there rather than
             // sending the user off to ssh-copy-id and back.
-            Err(DarnError::SshAuth(why)) if !installed_key => {
-                installed_key = true;
-                install_public_key(conn, hostname, ssh_user, port, key_path, session_id, &why)?;
+            Err(DarnError::SshAuth(why)) if !contact.key_installed => {
+                contact.key_installed = true;
+                contact.password = Some(install_public_key(
+                    conn, hostname, ssh_user, port, key_path, session_id, &why,
+                )?);
             }
             Err(e) => return Err(e),
         }
@@ -211,13 +255,14 @@ fn recorder<'a>(conn: &'a Connection, hostname: &'a str, session_id: &'a str) ->
 }
 
 /// Install the local public key on a host that accepts no key of ours, using
-/// a password typed at the prompt.
+/// a password typed at the prompt, and return that password.
 ///
 /// Says which key is going where before asking, since a password prompt from
 /// a tool that has never wanted one needs to account for itself. The password
-/// authenticates one connection and is neither stored nor logged: what goes
-/// in the command log is the authorized_keys command, whose only
-/// secret-shaped content is a public key.
+/// is returned so that the sudo step, if it comes, does not ask for the same
+/// secret a second time; it is held in memory for the rest of the command and
+/// is neither stored nor logged. What goes in the command log is the
+/// authorized_keys command, whose only secret-shaped content is a public key.
 #[allow(clippy::too_many_arguments)]
 fn install_public_key(
     conn: &Connection,
@@ -227,7 +272,7 @@ fn install_public_key(
     key_path: Option<&str>,
     session_id: &str,
     why: &str,
-) -> Result<(), DarnError> {
+) -> Result<String, DarnError> {
     let where_looked = match key_path {
         Some(key) => format!("for --key {key}"),
         None => "in ~/.ssh".to_string(),
@@ -264,6 +309,7 @@ fn install_public_key(
     );
 
     let mut session = None;
+    let mut accepted = None;
     let mut refusal = None;
     for attempt in 1..=PASSWORD_ATTEMPTS {
         let password = read_password(&format!("{account}'s password: "))
@@ -283,6 +329,7 @@ fn install_public_key(
         ) {
             Ok(open) => {
                 session = Some(open);
+                accepted = Some(password);
                 break;
             }
             // Keep why the server said no: after the last try it is the
@@ -322,7 +369,225 @@ fn install_public_key(
         green("Installed"),
         public_key_path.display()
     );
-    Ok(())
+    // Set on the same iteration that produced `session`, so this cannot be
+    // None here.
+    Ok(accepted.unwrap_or_default())
+}
+
+/// Make sure darn will be able to escalate on a host it is about to manage,
+/// offering a dedicated `darn` user when the account being added cannot.
+///
+/// Returns a session as that new user when one was created and is reachable,
+/// and `None` when nothing was needed or the offer was declined — declining
+/// leaves the host to be added under the account that was asked for, because
+/// a host darn cannot fully manage is still worth having on the list.
+#[allow(clippy::too_many_arguments)]
+fn ensure_privileges<'a>(
+    conn: &'a Connection,
+    session: &mut SshSession<'_>,
+    hostname: &'a str,
+    ssh_user: &str,
+    port: u16,
+    key_path: Option<&str>,
+    session_id: &'a str,
+    contact: &FirstContact,
+) -> Result<Option<SshSession<'a>>, DarnError> {
+    if has_passwordless_sudo(session)? {
+        return Ok(None);
+    }
+
+    let account = format!("{ssh_user}@{hostname}");
+    println!(
+        "{}",
+        yellow(&format!("{account} doesn't allow passwordless sudo, which darn requires."))
+    );
+
+    if !stdin_is_terminal() {
+        println!(
+            "{}",
+            yellow(&format!(
+                "Give {account} passwordless sudo, or run `darn server add` from a \
+                 terminal to be offered a `{DARN_USER}` user here."
+            ))
+        );
+        return Ok(None);
+    }
+
+    // An account nothing can log in to would be worse than no account, so the
+    // key that will authorise it is found before anything is offered.
+    let where_looked = match key_path {
+        Some(key) => format!("for --key {key}"),
+        None => "in ~/.ssh".to_string(),
+    };
+    let Some(public_key_path) = ssh::default_public_key(key_path) else {
+        println!(
+            "{}",
+            yellow(&format!(
+                "No public key found {where_looked} to authorise for a `{DARN_USER}` user; \
+                 create one with `ssh-keygen -t ed25519` and add {hostname} again."
+            ))
+        );
+        return Ok(None);
+    };
+    let public_key = std::fs::read_to_string(&public_key_path)
+        .map_err(|e| DarnError::Other(format!("cannot read {}: {e}", public_key_path.display())))?
+        .trim()
+        .to_string();
+
+    if !confirm(&format!(
+        "Create user '{DARN_USER}' with passwordless sudo on {hostname}?"
+    )) {
+        println!(
+            "{}",
+            yellow(&format!(
+                "Not created; {hostname} is being added as {account}, and commands \
+                 needing root will fail."
+            ))
+        );
+        return Ok(None);
+    }
+
+    // Permission to put this key on this host has already been given if a key
+    // was installed to get in at all; asking again would be asking twice.
+    let install_key = contact.key_installed
+        || confirm(&format!(
+            "Copy {} to {DARN_USER}'s authorized_keys on {hostname}?",
+            public_key_path.display()
+        ));
+
+    let password = match &contact.password {
+        // The SSH password is usually the sudo password too, but not always —
+        // so it is offered to sudo rather than assumed to work.
+        Some(known) if sudo_password_works(session, known)? => known.clone(),
+        _ => {
+            ask_sudo_password(session, &account)?
+        }
+    };
+
+    session
+        .run_with_stdin(
+            &ssh::sudo_password_command(&provision::create_user_command(
+                install_key.then_some(public_key.as_str()),
+            )),
+            &format!("{password}\n"),
+            true,
+        )
+        .map_err(|e| {
+            DarnError::Ssh(format!(
+                "{e}\nCould not create the {DARN_USER} user on {hostname}; \
+                 nothing was changed unless the error above says otherwise."
+            ))
+        })?;
+    println!(
+        "{} user {DARN_USER} with passwordless sudo on {hostname}",
+        green("Created")
+    );
+
+    if !install_key {
+        println!(
+            "{}",
+            yellow(&format!(
+                "No key was installed for {DARN_USER}, so {hostname} is being added as \
+                 {account}. Authorise a key for {DARN_USER} and add the host again to \
+                 use it."
+            ))
+        );
+        return Ok(None);
+    }
+    println!(
+        "{} {} on {DARN_USER}@{hostname}",
+        green("Installed"),
+        public_key_path.display()
+    );
+
+    // Prove the new account is usable before the database is told to trust
+    // it: a `darn` user that cannot be reached, or that still cannot sudo,
+    // would turn every later command into a puzzle.
+    let mut darn_session = SshSession::connect(
+        hostname,
+        DARN_USER,
+        port,
+        key_path,
+        Some(recorder(conn, hostname, session_id)),
+        DEFAULT_CONNECT_TIMEOUT,
+    )?;
+    if !has_passwordless_sudo(&mut darn_session)? {
+        return Err(DarnError::Other(format!(
+            "{DARN_USER}@{hostname} was created but still cannot run sudo without a \
+             password; {hostname} was not added"
+        )));
+    }
+    Ok(Some(darn_session))
+}
+
+/// Whether this session can already do what darn needs of it.
+///
+/// `id -u` first, because root needs no sudo at all and may not even have it
+/// installed — and because the account being added is not always called
+/// `root` when it is root.
+fn has_passwordless_sudo(session: &mut SshSession<'_>) -> Result<bool, DarnError> {
+    if session.run("id -u", false, false)?.stdout.trim() == "0" {
+        return Ok(true);
+    }
+    Ok(session.run("sudo -n true", false, false)?.exit_code == 0)
+}
+
+/// Ask for a password until sudo accepts one, as sudo itself asks.
+fn ask_sudo_password(session: &mut SshSession<'_>, account: &str) -> Result<String, DarnError> {
+    for attempt in 1..=PASSWORD_ATTEMPTS {
+        let password = read_password(&format!("[sudo] password for {account}: "))
+            .map_err(|e| DarnError::Other(format!("cannot read password: {e}")))?;
+        if password.is_empty() {
+            return Err(DarnError::Other(format!(
+                "no password entered; the {DARN_USER} user was not created"
+            )));
+        }
+        if sudo_password_works(session, &password)? {
+            return Ok(password);
+        }
+        if attempt < PASSWORD_ATTEMPTS {
+            println!("{}", yellow("Sorry, try again."));
+        }
+    }
+    Err(DarnError::Other(format!(
+        "sudo did not accept a password for {account} after {PASSWORD_ATTEMPTS} attempts; \
+         the {DARN_USER} user was not created. Answer 'n' when asked about it to add the \
+         host as {account} instead."
+    )))
+}
+
+/// Spend a password on `sudo -v` alone, so a wrong one costs nothing.
+///
+/// A refusal that is not about the password — the account not being a sudoer
+/// at all, or sudo wanting a tty — is an error rather than a retry: asking
+/// for the same password twice more would not change any of those answers.
+fn sudo_password_works(session: &mut SshSession<'_>, password: &str) -> Result<bool, DarnError> {
+    let result = session.run_with_stdin("sudo -S -p '' -v", &format!("{password}\n"), false)?;
+    if result.exit_code == 0 {
+        return Ok(true);
+    }
+    // sudo's own words for "the password is not the problem here": the
+    // account is no sudoer (`sudo -v` says "may not run sudo", a command says
+    // "is not in the sudoers file"), or sudo wants a tty an ssh exec has not
+    // got. A wrong password says "Sorry, try again" and matches none of them.
+    let stderr = result.stderr.to_lowercase();
+    let unrelated = [
+        "may not run sudo",
+        "not allowed to run sudo",
+        "not in the sudoers",
+        "must have a tty",
+    ]
+    .iter()
+    .any(|hint| stderr.contains(hint));
+    if unrelated {
+        return Err(DarnError::Other(format!(
+            "sudo on {} refused: {}\nAnswer 'n' when asked about the {DARN_USER} user to \
+             add the host as it is.",
+            session.hostname,
+            result.stderr.trim()
+        )));
+    }
+    Ok(false)
 }
 
 pub fn remove(db_path: Option<&Path>, hostname: &str) -> Result<i32, DarnError> {

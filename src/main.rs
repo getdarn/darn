@@ -5,6 +5,7 @@ mod errors;
 mod hosts;
 mod orchestrator;
 mod password;
+mod provision;
 mod quote;
 mod render;
 mod serverfile;
@@ -193,10 +194,11 @@ enum ServerCommand {
     /// without a port 22 is used.
     ///
     /// At a terminal, this is the one command that will ask you about SSH
-    /// trust: it shows an unknown host key for you to accept, and offers to
-    /// install your public key on a host where none works, prompting for the
-    /// remote account's password. Both are skipped when stdin is not a
-    /// terminal.
+    /// trust and privileges: it shows an unknown host key for you to accept,
+    /// offers to install your public key on a host where none works, and —
+    /// when the account cannot run sudo without a password — offers to create
+    /// a `darn` user that can, adding the host as that user instead. All are
+    /// skipped when stdin is not a terminal.
     Add {
         #[arg(
             value_name = "[USER@]HOSTNAME[:PORT]",
