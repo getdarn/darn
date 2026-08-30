@@ -7,9 +7,13 @@ use crate::ssh::SshSession;
 
 pub struct MikrotikHandler;
 
+impl MikrotikHandler {
+    pub const TYPE: &'static str = "mikrotik";
+}
+
 impl HostHandler for MikrotikHandler {
     fn type_name(&self) -> &'static str {
-        "mikrotik"
+        Self::TYPE
     }
 
     fn matches(&self, session: &mut SshSession<'_>) -> Result<bool, DarnError> {

@@ -9,7 +9,7 @@ use crate::commands::session_id;
 use crate::db;
 use crate::errors::DarnError;
 use crate::hosts::detect::detect_type;
-use crate::hosts::get_handler;
+use crate::hosts::{get_handler, MikrotikHandler};
 use crate::provision::DARN_USER;
 use crate::render::{dim, green};
 use crate::ssh::{Recorder, SshSession, DEFAULT_CONNECT_TIMEOUT};
@@ -58,7 +58,7 @@ pub fn add(
         // RouterOS has neither sudo nor useradd, and darn never escalates on
         // it; asking about a `darn` user there would be asking nonsense.
         let mut stored_user = ssh_user.clone();
-        if host_type != "mikrotik" {
+        if host_type != MikrotikHandler::TYPE {
             let provisioned = ensure_privileges(&conn, &mut session, &host, &session_id, &contact)?;
             if let Some(darn_session) = provisioned {
                 session = darn_session;

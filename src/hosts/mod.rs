@@ -1,10 +1,9 @@
 pub mod apt;
 pub mod detect;
+mod linux;
 pub mod mikrotik;
 pub mod os_release;
 pub mod redhat;
-
-use std::collections::HashMap;
 
 use crate::db::Patch;
 use crate::errors::DarnError;
@@ -56,6 +55,34 @@ impl RestartCheck {
             services: Vec::new(),
         }
     }
+
+    /// The same check with `services` attached — the list is parsed once per
+    /// probe while the verdict comes from whichever indicator answered first.
+    pub fn with_services(mut self, services: Vec<String>) -> Self {
+        self.services = services;
+        self
+    }
+}
+
+/// Reject the flag combination no handler can honour. Both Linux families
+/// enforced this separately, word for word.
+pub fn check_upgrade_flags(security: bool, non_security: bool) -> Result<(), DarnError> {
+    if security && non_security {
+        return Err(DarnError::Other(
+            "security and non_security are mutually exclusive".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// The packages among the known patches flagged security — what `--security`
+/// installs and `--non-security` excludes.
+pub fn security_packages(known_patches: &[Patch]) -> Vec<&str> {
+    known_patches
+        .iter()
+        .filter(|p| p.is_security)
+        .map(|p| p.package.as_str())
+        .collect()
 }
 
 pub trait HostHandler: Sync {
@@ -96,103 +123,6 @@ pub fn get_handler(type_name: &str) -> Result<&'static dyn HostHandler, DarnErro
         .find(|h| h.type_name() == type_name)
         .copied()
         .ok_or_else(|| DarnError::Other(format!("unknown host type: {type_name}")))
-}
-
-/// Restart units directly, in one call so a failure is reported not skipped.
-pub fn systemctl_restart(
-    session: &mut SshSession<'_>,
-    services: &[String],
-) -> Result<(), DarnError> {
-    if services.is_empty() {
-        return Ok(());
-    }
-    let units = services
-        .iter()
-        .map(|unit| crate::quote::sh_quote(unit))
-        .collect::<Vec<_>>()
-        .join(" ");
-    session.run(&format!("systemctl restart {units}"), true, true)?;
-    Ok(())
-}
-
-/// Trigger a reboot on a Linux host without waiting for it to go down.
-///
-/// The command is detached and its output redirected so that the SSH exec
-/// returns cleanly instead of hanging until the connection dies; if the
-/// connection drops anyway, that is the expected outcome, not a failure.
-pub fn reboot_linux(session: &mut SshSession<'_>) -> Result<(), DarnError> {
-    match session.run(
-        "(sleep 2; systemctl reboot || shutdown -r now || reboot) >/dev/null 2>&1 </dev/null &",
-        true,
-        false,
-    ) {
-        Ok(_) | Err(DarnError::Ssh(_)) => Ok(()),
-        Err(e) => Err(e),
-    }
-}
-
-// Containers see their host's kernel via uname but own neither it nor /boot,
-// so every kernel-based indicator is meaningless inside one.
-pub const CONTAINER_PROBE: &str = "systemd-detect-virt --container 2>/dev/null \
-|| cat /run/systemd/container 2>/dev/null || true";
-
-/// Verdict for a containerised host, or None if this is not a container.
-///
-/// needrestart omits its kernel verdict entirely inside a container, and the
-/// kernel comparison would pit the *host's* running kernel against whatever
-/// happens to be in the container's /boot — so neither may be consulted here.
-pub fn container_reboot_check(container: &str) -> Option<RestartCheck> {
-    let value = container
-        .lines()
-        .map(str::trim)
-        .rfind(|line| !line.is_empty())
-        .unwrap_or("");
-    if value.is_empty() || value == "none" {
-        return None;
-    }
-    Some(RestartCheck::new(
-        Reboot::No,
-        Some(&format!("{value} container: kernel belongs to the host")),
-    ))
-}
-
-/// Fall-back verdict from the running kernel versus the newest installed one.
-///
-/// Coarser than the distribution's own tooling — it cannot see a glibc or
-/// systemd update — so callers should only reach for it when that tooling is
-/// absent.
-pub fn kernel_reboot_check(running: &str, newest: &str) -> RestartCheck {
-    let running = running.trim();
-    let newest = newest.trim();
-    if running.is_empty() || newest.is_empty() {
-        return RestartCheck::new(Reboot::Unknown, Some("no reboot indicator available"));
-    }
-    if running != newest {
-        return RestartCheck::new(Reboot::Yes, Some(&format!("kernel {running} → {newest}")));
-    }
-    RestartCheck::new(Reboot::No, None)
-}
-
-/// Split `### NAME`-delimited probe output into a section → body mapping.
-pub fn parse_probe_sections(output: &str) -> HashMap<String, String> {
-    let mut sections: HashMap<String, Vec<&str>> = HashMap::new();
-    let mut current: Option<String> = None;
-    for raw in output.lines() {
-        let line = raw.trim_end();
-        if let Some(name) = line.strip_prefix("### ") {
-            let name = name.trim().to_string();
-            sections.entry(name.clone()).or_default();
-            current = Some(name);
-            continue;
-        }
-        if let Some(name) = &current {
-            sections.get_mut(name).unwrap().push(line);
-        }
-    }
-    sections
-        .into_iter()
-        .map(|(k, v)| (k, v.join("\n").trim().to_string()))
-        .collect()
 }
 
 #[cfg(test)]

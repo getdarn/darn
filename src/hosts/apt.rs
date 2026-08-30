@@ -4,11 +4,11 @@ use regex::Regex;
 
 use crate::db::Patch;
 use crate::errors::DarnError;
-use crate::hosts::os_release::{identify_from_os_release, parse_os_release};
-use crate::hosts::{
-    container_reboot_check, kernel_reboot_check, parse_probe_sections, reboot_linux,
-    systemctl_restart, HostHandler, Reboot, RestartCheck, CONTAINER_PROBE,
+use crate::hosts::linux::{
+    fallback_reboot_check, parse_probe_sections, reboot_linux, systemctl_restart, CONTAINER_PROBE,
 };
+use crate::hosts::os_release::{identify_from_os_release, matches_os_release};
+use crate::hosts::{check_upgrade_flags, security_packages, HostHandler, Reboot, RestartCheck};
 use crate::ssh::SshSession;
 
 // Matches simulated apt output lines like:
@@ -55,6 +55,8 @@ static SVC_RE: LazyLock<Regex> =
 pub struct AptHandler;
 
 impl AptHandler {
+    pub const TYPE: &'static str = "debian";
+
     fn apt_update(&self, session: &mut SshSession<'_>) -> Result<(), DarnError> {
         session.run(
             "DEBIAN_FRONTEND=noninteractive apt-get update -qq",
@@ -71,20 +73,11 @@ const BASE: &str = "DEBIAN_FRONTEND=noninteractive apt-get -y \
 
 impl HostHandler for AptHandler {
     fn type_name(&self) -> &'static str {
-        "debian"
+        Self::TYPE
     }
 
     fn matches(&self, session: &mut SshSession<'_>) -> Result<bool, DarnError> {
-        let res = session.probe("cat /etc/os-release 2>/dev/null || true", false, false)?;
-        if res.exit_code != 0 || res.stdout.is_empty() {
-            return Ok(false);
-        }
-        let fields = parse_os_release(&res.stdout);
-        let id = fields.get("ID").map(String::as_str).unwrap_or("");
-        let id_like = fields.get("ID_LIKE").map(String::as_str).unwrap_or("");
-        Ok(std::iter::once(id)
-            .chain(id_like.split_whitespace())
-            .any(|i| i == "ubuntu" || i == "debian"))
+        matches_os_release(session, |i| i == "ubuntu" || i == "debian")
     }
 
     fn identify(&self, session: &mut SshSession<'_>) -> Result<String, DarnError> {
@@ -109,20 +102,12 @@ impl HostHandler for AptHandler {
         non_security: bool,
         known_patches: &[Patch],
     ) -> Result<(), DarnError> {
-        if security && non_security {
-            return Err(DarnError::Other(
-                "security and non_security are mutually exclusive".to_string(),
-            ));
-        }
+        check_upgrade_flags(security, non_security)?;
 
         self.apt_update(session)?;
 
         if security {
-            let packages: Vec<&str> = known_patches
-                .iter()
-                .filter(|p| p.is_security)
-                .map(|p| p.package.as_str())
-                .collect();
+            let packages = security_packages(known_patches);
             if packages.is_empty() {
                 return Ok(());
             }
@@ -133,11 +118,7 @@ impl HostHandler for AptHandler {
                 true,
             )?;
         } else if non_security {
-            let excludes: Vec<&str> = known_patches
-                .iter()
-                .filter(|p| p.is_security)
-                .map(|p| p.package.as_str())
-                .collect();
+            let excludes = security_packages(known_patches);
             if !excludes.is_empty() {
                 // Using apt-mark hold is more robust than APT::Get::Hold.
                 let mark = quote_all(&excludes);
@@ -244,9 +225,7 @@ pub fn parse_debian_restarts(output: &str) -> RestartCheck {
         } else {
             pkgs.join(", ")
         };
-        let mut check = RestartCheck::new(Reboot::Yes, Some(&detail));
-        check.services = services;
-        return check;
+        return RestartCheck::new(Reboot::Yes, Some(&detail)).with_services(services);
     }
 
     if let Some(m) = KSTA_RE.captures(needrestart) {
@@ -258,34 +237,24 @@ pub fn parse_debian_restarts(output: &str) -> RestartCheck {
                 (Some(c), Some(e)) => format!("kernel {} → {}", &c[1], &e[1]),
                 _ => "needrestart reports an upgraded kernel".to_string(),
             };
-            let mut check = RestartCheck::new(Reboot::Yes, Some(&detail));
-            check.services = services;
-            return check;
+            return RestartCheck::new(Reboot::Yes, Some(&detail)).with_services(services);
         }
         if ksta == "2" {
-            let mut check = RestartCheck::new(Reboot::No, Some("ABI-compatible livepatch loaded"));
-            check.services = services;
-            return check;
+            return RestartCheck::new(Reboot::No, Some("ABI-compatible livepatch loaded"))
+                .with_services(services);
         }
         if ksta == "1" {
-            let mut check = RestartCheck::new(Reboot::No, None);
-            check.services = services;
-            return check;
+            return RestartCheck::new(Reboot::No, None).with_services(services);
         }
         // KSTA 0 means needrestart could not tell; keep looking.
     }
 
     // An absent marker only means "no reboot" if something is there to write it.
     if marker == "absent" && get("NOTIFIER").contains("install ok installed") {
-        let mut check = RestartCheck::new(Reboot::No, None);
-        check.services = services;
-        return check;
+        return RestartCheck::new(Reboot::No, None).with_services(services);
     }
 
-    let mut verdict = container_reboot_check(get("CONTAINER"))
-        .unwrap_or_else(|| kernel_reboot_check(get("RUNNING"), get("NEWEST")));
-    verdict.services = services;
-    verdict
+    fallback_reboot_check(get("CONTAINER"), get("RUNNING"), get("NEWEST")).with_services(services)
 }
 
 fn archives_are_security(archives_blob: &str) -> bool {

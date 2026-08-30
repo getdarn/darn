@@ -99,7 +99,12 @@ pub fn other_names_for_key(host_key: &HostKey) -> Vec<String> {
                 continue;
             }
             if line.key_base64 == encoded {
-                found.push(format!("{}:{}: {}", file.display(), index + 1, line.hosts_field));
+                found.push(format!(
+                    "{}:{}: {}",
+                    file.display(),
+                    index + 1,
+                    line.hosts_field
+                ));
             }
         }
     }

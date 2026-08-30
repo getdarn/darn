@@ -527,10 +527,18 @@ mod tests {
     fn a_command_reads_as_a_prompt_line_over_its_own_output() {
         let out = log_transcript(
             &server(),
-            &[logged("apt-get update", "Hit:1 http://deb.debian.org\n", "", 0)],
+            &[logged(
+                "apt-get update",
+                "Hit:1 http://deb.debian.org\n",
+                "",
+                0,
+            )],
         );
         let lines: Vec<&str> = out.lines().collect();
-        assert!(lines[0].contains("admin@web-01 # apt-get update (at "), "{out:?}");
+        assert!(
+            lines[0].contains("admin@web-01 # apt-get update (at "),
+            "{out:?}"
+        );
         assert_eq!(lines[1], "Hit:1 http://deb.debian.org");
         // Nothing is framed any more, and a clean run says nothing about exit.
         assert!(!out.contains('│') && !out.contains('╭'), "{out:?}");

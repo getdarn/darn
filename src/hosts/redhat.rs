@@ -5,11 +5,11 @@ use regex::Regex;
 
 use crate::db::Patch;
 use crate::errors::DarnError;
-use crate::hosts::os_release::{identify_from_os_release, parse_os_release};
-use crate::hosts::{
-    container_reboot_check, kernel_reboot_check, parse_probe_sections, reboot_linux,
-    systemctl_restart, HostHandler, Reboot, RestartCheck, CONTAINER_PROBE,
+use crate::hosts::linux::{
+    fallback_reboot_check, parse_probe_sections, reboot_linux, systemctl_restart, CONTAINER_PROBE,
 };
+use crate::hosts::os_release::{identify_from_os_release, matches_os_release};
+use crate::hosts::{check_upgrade_flags, security_packages, HostHandler, Reboot, RestartCheck};
 use crate::ssh::SshSession;
 
 const REDHAT_IDS: [&str; 7] = [
@@ -61,6 +61,8 @@ static NVR_RE: LazyLock<Regex> = LazyLock::new(|| {
 pub struct RedHatHandler;
 
 impl RedHatHandler {
+    pub const TYPE: &'static str = "redhat";
+
     fn pm(&self, session: &mut SshSession<'_>) -> Result<String, DarnError> {
         let res = session.probe(
             "command -v dnf >/dev/null 2>&1 && echo dnf || echo yum",
@@ -78,20 +80,11 @@ impl RedHatHandler {
 
 impl HostHandler for RedHatHandler {
     fn type_name(&self) -> &'static str {
-        "redhat"
+        Self::TYPE
     }
 
     fn matches(&self, session: &mut SshSession<'_>) -> Result<bool, DarnError> {
-        let res = session.probe("cat /etc/os-release 2>/dev/null || true", false, false)?;
-        if res.exit_code != 0 || res.stdout.is_empty() {
-            return Ok(false);
-        }
-        let fields = parse_os_release(&res.stdout);
-        let id = fields.get("ID").map(String::as_str).unwrap_or("");
-        let id_like = fields.get("ID_LIKE").map(String::as_str).unwrap_or("");
-        Ok(std::iter::once(id)
-            .chain(id_like.split_whitespace())
-            .any(|i| REDHAT_IDS.contains(&i)))
+        matches_os_release(session, |i| REDHAT_IDS.contains(&i))
     }
 
     fn identify(&self, session: &mut SshSession<'_>) -> Result<String, DarnError> {
@@ -134,21 +127,13 @@ impl HostHandler for RedHatHandler {
         non_security: bool,
         known_patches: &[Patch],
     ) -> Result<(), DarnError> {
-        if security && non_security {
-            return Err(DarnError::Other(
-                "security and non_security are mutually exclusive".to_string(),
-            ));
-        }
+        check_upgrade_flags(security, non_security)?;
         let pm = self.pm(session)?;
 
         if security {
             session.run(&format!("{pm} upgrade -y --security"), true, true)?;
         } else if non_security {
-            let excludes: Vec<&str> = known_patches
-                .iter()
-                .filter(|p| p.is_security)
-                .map(|p| p.package.as_str())
-                .collect();
+            let excludes = security_packages(known_patches);
             if !excludes.is_empty() {
                 let exc = excludes
                     .iter()
@@ -261,9 +246,7 @@ pub fn parse_redhat_restarts(output: &str) -> RestartCheck {
         .any(|marker| lowered.contains(marker));
     if !plugin_missing {
         if exit_code == Some(0) {
-            let mut check = RestartCheck::new(Reboot::No, None);
-            check.services = services;
-            return check;
+            return RestartCheck::new(Reboot::No, None).with_services(services);
         }
         if exit_code == Some(1) {
             let detail = if message.is_empty() {
@@ -271,16 +254,11 @@ pub fn parse_redhat_restarts(output: &str) -> RestartCheck {
             } else {
                 message
             };
-            let mut check = RestartCheck::new(Reboot::Yes, Some(&detail));
-            check.services = services;
-            return check;
+            return RestartCheck::new(Reboot::Yes, Some(&detail)).with_services(services);
         }
     }
 
-    let mut verdict = container_reboot_check(get("CONTAINER"))
-        .unwrap_or_else(|| kernel_reboot_check(get("RUNNING"), get("NEWEST")));
-    verdict.services = services;
-    verdict
+    fallback_reboot_check(get("CONTAINER"), get("RUNNING"), get("NEWEST")).with_services(services)
 }
 
 /// Extract unit names from `needs-restarting -s` output.
