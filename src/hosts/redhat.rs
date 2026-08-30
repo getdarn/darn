@@ -322,7 +322,7 @@ pub fn parse_dnf_updateinfo_security(output: &str) -> HashSet<String> {
 }
 
 #[cfg(test)]
-pub fn reboot_probe() -> &'static str {
+pub(super) fn reboot_probe() -> &'static str {
     &REBOOT_PROBE
 }
 

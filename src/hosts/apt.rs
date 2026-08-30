@@ -297,7 +297,7 @@ fn archives_are_security(archives_blob: &str) -> bool {
 }
 
 #[cfg(test)]
-pub fn reboot_probe() -> &'static str {
+pub(super) fn reboot_probe() -> &'static str {
     &REBOOT_PROBE
 }
 

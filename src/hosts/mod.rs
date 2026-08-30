@@ -194,3 +194,37 @@ pub fn parse_probe_sections(output: &str) -> HashMap<String, String> {
         .map(|(k, v)| (k, v.join("\n").trim().to_string()))
         .collect()
 }
+
+#[cfg(test)]
+mod quoting_parity_tests {
+    // One-off parity check against Python shlex.quote output; reads the
+    // fixture produced in the scratchpad. Skipped when the file is absent.
+    // Lives here rather than with sh_quote so the probes it quotes are the
+    // handlers' real ones.
+    #[test]
+    fn sudo_quoting_matches_python() {
+        let path = std::env::var("DARN_PY_QUOTED").unwrap_or_default();
+        if path.is_empty() {
+            return;
+        }
+        let expected = std::fs::read_to_string(path).unwrap();
+        let apt = super::apt::reboot_probe();
+        let rh = super::redhat::reboot_probe();
+        let cmds = [
+            apt.to_string(),
+            rh.replace("{pm}", "dnf"),
+            rh.replace("{pm}", "yum"),
+            "systemctl restart 'cron.service' 'postfix@-.service'".to_string(),
+            "DEBIAN_FRONTEND=noninteractive apt-get update -qq".to_string(),
+        ];
+        let mut actual = String::new();
+        for cmd in &cmds {
+            let quoted = crate::quote::sh_quote(cmd);
+            actual.push_str(&format!("sudo -n -- sh -c {quoted}\n=====\n"));
+        }
+        if let Ok(dump) = std::env::var("DARN_DUMP") {
+            std::fs::write(dump, &actual).unwrap();
+        }
+        assert_eq!(expected, actual);
+    }
+}
