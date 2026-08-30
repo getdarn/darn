@@ -39,12 +39,9 @@ pub fn run(db_path: Option<&Path>, jobs: usize) -> Result<i32, DarnError> {
             } else {
                 green(&body)
             };
-            Ok(coloured
-                + &restart_suffix(
-                    thread_conn,
-                    &server.hostname,
-                    Some(restarts.reboot.as_str()),
-                ))
+            let (actionable, deferred) =
+                db::count_pending_services(thread_conn, &server.hostname).unwrap_or((0, 0));
+            Ok(coloured + &restart_suffix(Some(restarts.reboot.as_str()), actionable, deferred))
         };
         let outcome = attempt();
         if outcome.is_err() {

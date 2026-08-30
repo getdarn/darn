@@ -10,9 +10,9 @@ use crate::commands::{confirm, session_id};
 use crate::db::{self, Server};
 use crate::errors::DarnError;
 use crate::hosts::{get_handler, Reboot, RestartCheck};
-use crate::orchestrator::{run_parallel, HostResult};
+use crate::orchestrator::{command_recorder, run_parallel, HostResult};
 use crate::render::{bold, restart_suffix, yellow};
-use crate::ssh::{Recorder, SshSession};
+use crate::ssh::SshSession;
 
 pub const BOOT_ID_CMD: &str = "cat /proc/sys/kernel/random/boot_id 2>/dev/null || true";
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
@@ -36,17 +36,7 @@ fn wait_for_reboot(
     while started.elapsed() < deadline {
         std::thread::sleep(POLL_INTERVAL);
         let poll = || -> Result<Option<(f64, RestartCheck)>, DarnError> {
-            let recorder: Recorder<'_> = Box::new(|command, stdout, stderr, exit_code| {
-                let _ = db::record_command(
-                    conn,
-                    &server.hostname,
-                    session_id,
-                    command,
-                    Some(stdout),
-                    Some(stderr),
-                    Some(exit_code),
-                );
-            });
+            let recorder = command_recorder(conn, &server.hostname, session_id);
             let mut session = SshSession::connect(
                 &server.hostname,
                 &server.ssh_user,
@@ -93,18 +83,30 @@ fn wait_for_reboot(
     )))
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn run(
-    db_path: Option<&Path>,
-    target: &str,
-    mut jobs: usize,
-    yes: bool,
-    force: bool,
-    wait: bool,
-    timeout: f64,
-    include_no_all: bool,
-    dry_run: bool,
-) -> Result<i32, DarnError> {
+/// Everything `darn reboot` was invoked with, minus the shared --db.
+pub struct Options {
+    pub target: String,
+    pub jobs: usize,
+    pub yes: bool,
+    pub force: bool,
+    pub wait: bool,
+    pub timeout: f64,
+    pub include_no_all: bool,
+    pub dry_run: bool,
+}
+
+pub fn run(db_path: Option<&Path>, options: Options) -> Result<i32, DarnError> {
+    let Options {
+        target,
+        mut jobs,
+        yes,
+        force,
+        wait,
+        timeout,
+        include_no_all,
+        dry_run,
+    } = options;
+    let target = target.as_str();
     let conn = db::open_db(db_path)?;
 
     let (servers, description) = if target == "all" {
@@ -112,10 +114,11 @@ pub fn run(
             &conn,
             include_no_all,
             |s| {
+                let flag = s.reboot_required.as_deref().and_then(Reboot::parse);
                 Ok(if force {
-                    s.reboot_required.as_deref() != Some("no")
+                    flag != Some(Reboot::No)
                 } else {
-                    s.reboot_required.as_deref() == Some("yes")
+                    flag == Some(Reboot::Yes)
                 })
             },
             "No hosts are waiting on a reboot.",
@@ -126,7 +129,8 @@ pub fn run(
         (servers, "Rebooting".to_string())
     } else {
         let single = require_server(&conn, target)?;
-        if !force && single.reboot_required.as_deref() != Some("yes") {
+        if !force && single.reboot_required.as_deref().and_then(Reboot::parse) != Some(Reboot::Yes)
+        {
             let state = single
                 .reboot_required
                 .clone()
@@ -186,9 +190,11 @@ run `darn update` first, or pass --force"
             let (elapsed, check) =
                 wait_for_reboot(server, thread_conn, &session_id, &previous_boot_id, timeout)?;
             store_restart_state(thread_conn, &server.hostname, &check)?;
+            let (actionable, deferred) =
+                db::count_pending_services(thread_conn, &server.hostname).unwrap_or((0, 0));
             Ok(format!(
                 "rebooted (up in {elapsed:.0}s){}",
-                restart_suffix(thread_conn, &server.hostname, Some(check.reboot.as_str()))
+                restart_suffix(Some(check.reboot.as_str()), actionable, deferred)
             ))
         };
         let outcome = attempt();

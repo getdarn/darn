@@ -13,15 +13,26 @@ use crate::orchestrator::{run_parallel, HostResult};
 use crate::render::{bold, dim, red, yellow};
 use crate::ssh::SshSession;
 
-pub fn run(
-    db_path: Option<&Path>,
-    target: &str,
-    jobs: usize,
-    yes: bool,
-    force: bool,
-    include_no_all: bool,
-    dry_run: bool,
-) -> Result<i32, DarnError> {
+/// Everything `darn restartservices` was invoked with, minus the shared --db.
+pub struct Options {
+    pub target: String,
+    pub jobs: usize,
+    pub yes: bool,
+    pub force: bool,
+    pub include_no_all: bool,
+    pub dry_run: bool,
+}
+
+pub fn run(db_path: Option<&Path>, options: Options) -> Result<i32, DarnError> {
+    let Options {
+        target,
+        jobs,
+        yes,
+        force,
+        include_no_all,
+        dry_run,
+    } = options;
+    let target = target.as_str();
     let conn = db::open_db(db_path)?;
 
     let selectable = |conn: &Connection, hostname: &str| -> Result<i64, DarnError> {

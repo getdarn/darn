@@ -1,19 +1,9 @@
 use std::path::Path;
 
-use crate::db::{self, Server};
+use crate::db;
 use crate::errors::DarnError;
-use crate::render::render_status;
-
-/// Describe a host with nothing outstanding, for `status --plain --all`.
-fn idle_state(server: &Server) -> &'static str {
-    if server.last_update_at.is_none() {
-        return "not yet checked";
-    }
-    if server.last_update_ok == Some(0) {
-        return "discovery failed";
-    }
-    "up to date"
-}
+use crate::hosts::Reboot;
+use crate::render::{idle_fragment, patch_list, render_status};
 
 pub fn run(db_path: Option<&Path>, plain: bool, show_all: bool) -> Result<i32, DarnError> {
     let conn = db::open_db(db_path)?;
@@ -24,12 +14,13 @@ pub fn run(db_path: Option<&Path>, plain: bool, show_all: bool) -> Result<i32, D
     }
     for s in &servers {
         let patches = db::get_pending_patches(&conn, &s.hostname)?;
-        let needs_reboot = s.reboot_required.as_deref() == Some("yes");
+        let needs_reboot =
+            s.reboot_required.as_deref().and_then(Reboot::parse) == Some(Reboot::Yes);
         let services = db::get_pending_services(&conn, &s.hostname, Some(false))?;
         let deferred = db::get_pending_services(&conn, &s.hostname, Some(true))?;
         if patches.is_empty() && !needs_reboot && services.is_empty() && deferred.is_empty() {
             if show_all {
-                println!("{}: {}", s.hostname, idle_state(s));
+                println!("{}: {}", s.hostname, idle_fragment(s).1);
             }
             continue;
         }
@@ -40,18 +31,7 @@ pub fn run(db_path: Option<&Path>, plain: bool, show_all: bool) -> Result<i32, D
                 "{}: {security_count} security (*), {other_count} other",
                 s.hostname
             );
-            let pkgs = patches
-                .iter()
-                .map(|p| {
-                    if p.is_security {
-                        format!("{}*", p.package)
-                    } else {
-                        p.package.clone()
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(" ");
-            println!("   {pkgs}");
+            println!("   {}", patch_list(&patches));
         }
         if needs_reboot {
             let detail = match s.reboot_detail.as_deref() {

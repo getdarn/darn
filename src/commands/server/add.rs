@@ -10,9 +10,10 @@ use crate::db;
 use crate::errors::DarnError;
 use crate::hosts::detect::detect_type;
 use crate::hosts::{get_handler, MikrotikHandler};
+use crate::orchestrator::command_recorder;
 use crate::provision::DARN_USER;
 use crate::render::{dim, green};
-use crate::ssh::{Recorder, SshSession, DEFAULT_CONNECT_TIMEOUT};
+use crate::ssh::{SshSession, DEFAULT_CONNECT_TIMEOUT};
 use crate::target::parse_target;
 
 use super::access::{ensure_privileges, install_public_key};
@@ -132,7 +133,7 @@ fn connect_to_new_host<'a>(
             host.ssh_user,
             host.port,
             host.key_path,
-            Some(recorder(conn, host.hostname, session_id)),
+            Some(command_recorder(conn, host.hostname, session_id)),
             DEFAULT_CONNECT_TIMEOUT,
         );
         match attempt {
@@ -152,24 +153,4 @@ fn connect_to_new_host<'a>(
             Err(e) => return Err(e),
         }
     }
-}
-
-/// Log every command run while adding a host, so `darn log` shows the type
-/// detection — and any key install — alongside later sessions.
-pub(super) fn recorder<'a>(
-    conn: &'a Connection,
-    hostname: &'a str,
-    session_id: &'a str,
-) -> Recorder<'a> {
-    Box::new(move |command, stdout, stderr, exit_code| {
-        let _ = db::record_command(
-            conn,
-            hostname,
-            session_id,
-            command,
-            Some(stdout),
-            Some(stderr),
-            Some(exit_code),
-        );
-    })
 }

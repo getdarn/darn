@@ -4,7 +4,8 @@ use comfy_table::{ContentArrangement, Table, TableComponent};
 use console::style;
 use rusqlite::Connection;
 
-use crate::db::{self, LoggedCommand, Server};
+use crate::db::{self, LoggedCommand, Patch, Server};
+use crate::hosts::Reboot;
 use crate::orchestrator::HostResult;
 use crate::ssh::{OutEvent, OutputSink};
 use crate::target::current_user;
@@ -119,18 +120,20 @@ pub fn format_host(server: &Server, current_user: &str) -> String {
 }
 
 /// The pending reboot and service restarts, as (colour, text) fragments.
+///
+/// `(actionable, deferred)` are the pending-service counts, fetched by the
+/// caller — a formatter is not the place to run queries.
 fn restart_parts(
-    conn: &Connection,
-    hostname: &str,
     reboot: Option<&str>,
+    actionable: i64,
+    deferred: i64,
 ) -> Vec<(&'static str, String)> {
     let mut parts = Vec::new();
-    if reboot == Some("yes") {
-        parts.push(("red", "reboot required".to_string()));
-    } else if reboot == Some("unknown") {
-        parts.push(("yellow", "reboot unknown".to_string()));
+    match reboot.and_then(Reboot::parse) {
+        Some(Reboot::Yes) => parts.push(("red", "reboot required".to_string())),
+        Some(Reboot::Unknown) => parts.push(("yellow", "reboot unknown".to_string())),
+        _ => {}
     }
-    let (actionable, deferred) = db::count_pending_services(conn, hostname).unwrap_or((0, 0));
     if actionable > 0 {
         parts.push(("yellow", format!("{actionable} services")));
     }
@@ -143,8 +146,8 @@ fn restart_parts(
 }
 
 /// Annotate a status cell with pending reboot and service restarts.
-pub fn restart_suffix(conn: &Connection, hostname: &str, reboot: Option<&str>) -> String {
-    restart_parts(conn, hostname, reboot)
+pub fn restart_suffix(reboot: Option<&str>, actionable: i64, deferred: i64) -> String {
+    restart_parts(reboot, actionable, deferred)
         .iter()
         .map(|(colour, text)| format!(" {}", paint(colour, &format!("· {text}"))))
         .collect()
@@ -181,8 +184,9 @@ pub fn render_server_list(servers: &[Server]) {
     println!("{table}");
 }
 
-/// How a host with no outstanding work reports itself under --all.
-fn idle_fragment(server: &Server) -> (&'static str, String) {
+/// How a host with no outstanding work reports itself under --all, as a
+/// (colour, text) fragment. `status --plain` prints the text alone.
+pub fn idle_fragment(server: &Server) -> (&'static str, String) {
     if server.last_update_at.is_none() {
         return ("dim", "not yet checked".to_string());
     }
@@ -190,6 +194,21 @@ fn idle_fragment(server: &Server) -> (&'static str, String) {
         return ("red", "discovery failed".to_string());
     }
     ("green", "up to date".to_string())
+}
+
+/// Every pending package on one line, the security ones starred.
+pub fn patch_list(patches: &[Patch]) -> String {
+    patches
+        .iter()
+        .map(|p| {
+            if p.is_security {
+                format!("{}*", p.package)
+            } else {
+                p.package.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Show outstanding work per host, in the same shape as `update` results.
@@ -205,7 +224,8 @@ pub fn render_status(conn: &Connection, servers: &[Server], show_all: bool) {
     let mut shown = 0;
     for s in servers {
         let patches = db::get_pending_patches(conn, &s.hostname).unwrap_or_default();
-        let needs_reboot = s.reboot_required.as_deref() == Some("yes");
+        let needs_reboot =
+            s.reboot_required.as_deref().and_then(Reboot::parse) == Some(Reboot::Yes);
         let services = db::get_pending_services(conn, &s.hostname, Some(false)).unwrap_or_default();
         let deferred = db::get_pending_services(conn, &s.hostname, Some(true)).unwrap_or_default();
         if patches.is_empty()
@@ -227,10 +247,12 @@ pub fn render_status(conn: &Connection, servers: &[Server], show_all: bool) {
                 format!("{} pending ({security} security)", patches.len()),
             ));
         }
+        let (actionable, deferred_count) =
+            db::count_pending_services(conn, &s.hostname).unwrap_or((0, 0));
         fragments.extend(restart_parts(
-            conn,
-            &s.hostname,
             s.reboot_required.as_deref(),
+            actionable,
+            deferred_count,
         ));
         if fragments.is_empty() {
             // Only reachable under show_all: say why there is nothing to report.
@@ -254,18 +276,7 @@ pub fn render_status(conn: &Connection, servers: &[Server], show_all: bool) {
         }
         let mut lines = vec![summary];
         if !patches.is_empty() {
-            let pkgs = patches
-                .iter()
-                .map(|p| {
-                    if p.is_security {
-                        format!("{}*", p.package)
-                    } else {
-                        p.package.clone()
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(" ");
-            lines.push(dim(&pkgs));
+            lines.push(dim(&patch_list(&patches)));
         }
         if needs_reboot {
             if let Some(detail) = &s.reboot_detail {

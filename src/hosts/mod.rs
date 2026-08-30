@@ -28,6 +28,18 @@ impl Reboot {
             Reboot::Unknown => "unknown",
         }
     }
+
+    /// The inverse of `as_str`, for the flag read back from the database.
+    /// Anything else — old darn3 data, hand edits — is None, and callers
+    /// treat that the way they treat an unset flag.
+    pub fn parse(s: &str) -> Option<Reboot> {
+        match s {
+            "yes" => Some(Reboot::Yes),
+            "no" => Some(Reboot::No),
+            "unknown" => Some(Reboot::Unknown),
+            _ => None,
+        }
+    }
 }
 
 /// What a host needs restarted to finish applying its installed changes.

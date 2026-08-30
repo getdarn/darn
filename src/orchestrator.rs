@@ -16,6 +16,25 @@ pub struct HostResult {
     pub message: String,
 }
 
+/// A Recorder that logs every command to the command_log under `session_id`.
+pub fn command_recorder<'a>(
+    conn: &'a Connection,
+    hostname: &'a str,
+    session_id: &'a str,
+) -> Recorder<'a> {
+    Box::new(move |command, stdout, stderr, exit_code| {
+        let _ = db::record_command(
+            conn,
+            hostname,
+            session_id,
+            command,
+            Some(stdout),
+            Some(stderr),
+            Some(exit_code),
+        );
+    })
+}
+
 /// Run `work` against every server, at most `jobs` hosts at a time.
 ///
 /// Each task gets its own DB connections (SQLite connections are not Sync;
@@ -101,28 +120,19 @@ where
         Err(e) => return fail(e.to_string()),
     };
 
-    let hostname = server.hostname.clone();
-    let session_id = session_id.to_string();
-    let recorder: Recorder<'_> = Box::new(move |command, stdout, stderr, exit_code| {
-        let _ = db::record_command(
-            &recorder_conn,
-            &hostname,
-            &session_id,
-            command,
-            Some(stdout),
-            Some(stderr),
-            Some(exit_code),
-        );
-    });
+    let recorder = command_recorder(&recorder_conn, &server.hostname, session_id);
 
-    match SshSession::connect(
+    // Bound to a local so the session (which borrows recorder_conn through
+    // its recorder) is dropped before the connection, not at the fn's end.
+    let connected = SshSession::connect(
         &server.hostname,
         &server.ssh_user,
         server.ssh_port,
         server.ssh_key_path.as_deref(),
         Some(recorder),
         DEFAULT_CONNECT_TIMEOUT,
-    ) {
+    );
+    match connected {
         Ok(mut session) => work(server, &mut session, &work_conn),
         Err(e) => fail(e.to_string()),
     }

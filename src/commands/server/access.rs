@@ -8,12 +8,13 @@ use rusqlite::Connection;
 
 use crate::commands::confirm;
 use crate::errors::DarnError;
+use crate::orchestrator::command_recorder;
 use crate::password::{read_password, stdin_is_terminal};
 use crate::provision::{self, DARN_USER};
 use crate::render::{bold, green, yellow};
 use crate::ssh::{self, SshSession, DEFAULT_CONNECT_TIMEOUT};
 
-use super::add::{recorder, FirstContact, NewHost};
+use super::add::{FirstContact, NewHost};
 use super::PASSWORD_ATTEMPTS;
 
 /// Where a public key was searched for, for messages about not finding one.
@@ -116,7 +117,7 @@ pub(super) fn install_public_key(
             host.ssh_user,
             host.port,
             password,
-            Some(recorder(conn, host.hostname, session_id)),
+            Some(command_recorder(conn, host.hostname, session_id)),
             DEFAULT_CONNECT_TIMEOUT,
         ) {
             Ok(open) => Ok(Some((open, password.to_string()))),
@@ -281,7 +282,7 @@ pub(super) fn ensure_privileges<'a>(
         DARN_USER,
         host.port,
         host.key_path,
-        Some(recorder(conn, hostname, session_id)),
+        Some(command_recorder(conn, hostname, session_id)),
         DEFAULT_CONNECT_TIMEOUT,
     )?;
     if !has_passwordless_sudo(&mut darn_session)? {
