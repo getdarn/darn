@@ -91,8 +91,48 @@ fn expand_and_order(stored_types: &[String]) -> String {
     algs.join(",")
 }
 
-/// Key types of known_hosts entries matching `hostname`/`port`, in file order.
-pub(super) fn stored_key_types(content: &str, hostname: &str, port: u16) -> Vec<String> {
+/// One known_hosts line with its fields split and any marker peeled off.
+///
+/// Syntactic only: what a marker means, whether a key type is acceptable,
+/// and whether hashed entries are usable are the consumer's decisions —
+/// the three readers of this file genuinely disagree on all of them.
+pub(crate) struct KnownHostsLine<'a> {
+    /// `@cert-authority` / `@revoked`, when present.
+    pub(crate) marker: Option<&'a str>,
+    /// The raw hosts field: a comma list of patterns, or a `|1|...` hash.
+    pub(crate) hosts_field: &'a str,
+    pub(crate) key_type: &'a str,
+    pub(crate) key_base64: &'a str,
+}
+
+/// Split one raw line into fields; None for blanks and comments.
+///
+/// Missing trailing fields come back empty rather than failing the line:
+/// completion wants host names even from lines too short to carry a key.
+pub(crate) fn parse_line(raw: &str) -> Option<KnownHostsLine<'_>> {
+    let mut line = raw.trim();
+    if line.is_empty() || line.starts_with('#') {
+        return None;
+    }
+    // @cert-authority / @revoked shift the fields along by one.
+    let mut marker = None;
+    if line.starts_with('@') {
+        let (found, rest) = line.split_once(char::is_whitespace)?;
+        marker = Some(found);
+        line = rest.trim_start();
+    }
+    let mut fields = line.split_whitespace();
+    Some(KnownHostsLine {
+        marker,
+        hosts_field: fields.next()?,
+        key_type: fields.next().unwrap_or(""),
+        key_base64: fields.next().unwrap_or(""),
+    })
+}
+
+/// Whether the line's hosts field names `hostname` at `port`, covering the
+/// hashed, globbed, negated and `[host]:port` forms.
+fn line_matches_host(line: &KnownHostsLine<'_>, hostname: &str, port: u16) -> bool {
     // A bare hostname entry means port 22; other ports only match the
     // bracketed form, as in OpenSSH.
     let bracketed = format!("[{hostname}]:{port}");
@@ -100,56 +140,70 @@ pub(super) fn stored_key_types(content: &str, hostname: &str, port: u16) -> Vec<
     if port == 22 {
         candidates.push(hostname.to_string());
     }
+    let mut patterns = line.hosts_field;
+    if patterns.starts_with("|1|") {
+        return candidates.iter().any(|c| hashed_entry_matches(patterns, c));
+    }
+    // Comma-separated glob patterns; negations exclude the whole line.
+    let mut matched = false;
+    let mut negated = false;
+    loop {
+        let (pattern, rest) = match patterns.split_once(',') {
+            Some((p, r)) => (p, Some(r)),
+            None => (patterns, None),
+        };
+        let (pattern, negate) = match pattern.strip_prefix('!') {
+            Some(p) => (p, true),
+            None => (pattern, false),
+        };
+        if candidates.iter().any(|c| glob_match(pattern, c)) {
+            if negate {
+                negated = true;
+            } else {
+                matched = true;
+            }
+        }
+        match rest {
+            Some(r) => patterns = r,
+            None => break,
+        }
+    }
+    matched && !negated
+}
+
+/// The literal names in the hosts field, `[host]:port` brackets stripped.
+///
+/// Hashed entries cannot be reversed into a name and patterns name no single
+/// host, so both yield nothing.
+pub(crate) fn plain_names<'a>(line: &KnownHostsLine<'a>) -> impl Iterator<Item = &'a str> {
+    let hashed = line.hosts_field.starts_with("|1|");
+    line.hosts_field
+        .split(',')
+        .filter(move |_| !hashed)
+        .filter(|p| !p.starts_with('!') && !p.contains('*') && !p.contains('?'))
+        .filter_map(|p| match p.strip_prefix('[') {
+            Some(rest) => rest.split_once(']').map(|(host, _port)| host),
+            None => Some(p),
+        })
+        .filter(|name| !name.is_empty())
+}
+
+/// Key types of known_hosts entries matching `hostname`/`port`, in file order.
+pub(super) fn stored_key_types(content: &str, hostname: &str, port: u16) -> Vec<String> {
     let mut types = Vec::new();
     for raw in content.lines() {
-        let line = raw.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let mut fields = line.split_whitespace();
-        let mut patterns = fields.next().unwrap_or("");
-        // Skip marker lines (@cert-authority, @revoked): not plain host keys.
-        if patterns.starts_with('@') {
-            continue;
-        }
-        let Some(key_type) = fields.next() else {
+        let Some(line) = parse_line(raw) else {
             continue;
         };
-        if !key_type.starts_with("ssh-") && !key_type.starts_with("ecdsa-") {
-            continue; // e.g. legacy "1024 35 ..." RSA1 lines
-        }
-        if patterns.starts_with("|1|") {
-            if candidates.iter().any(|c| hashed_entry_matches(patterns, c)) {
-                types.push(key_type.to_string());
-            }
+        // Skip marker lines (@cert-authority, @revoked): not plain host keys.
+        if line.marker.is_some() {
             continue;
         }
-        // Comma-separated glob patterns; negations exclude the whole line.
-        let mut matched = false;
-        let mut negated = false;
-        loop {
-            let (pattern, rest) = match patterns.split_once(',') {
-                Some((p, r)) => (p, Some(r)),
-                None => (patterns, None),
-            };
-            let (pattern, negate) = match pattern.strip_prefix('!') {
-                Some(p) => (p, true),
-                None => (pattern, false),
-            };
-            if candidates.iter().any(|c| glob_match(pattern, c)) {
-                if negate {
-                    negated = true;
-                } else {
-                    matched = true;
-                }
-            }
-            match rest {
-                Some(r) => patterns = r,
-                None => break,
-            }
+        if !line.key_type.starts_with("ssh-") && !line.key_type.starts_with("ecdsa-") {
+            continue; // e.g. legacy "1024 35 ..." RSA1 lines
         }
-        if matched && !negated {
-            types.push(key_type.to_string());
+        if line_matches_host(&line, hostname, port) {
+            types.push(line.key_type.to_string());
         }
     }
     types

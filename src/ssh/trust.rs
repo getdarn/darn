@@ -8,7 +8,7 @@ use ssh2::{HashType, HostKeyType};
 
 use crate::errors::DarnError;
 
-use super::known_hosts::known_hosts_files;
+use super::known_hosts::{known_hosts_files, parse_line};
 use super::SshSession;
 
 /// A host key as the server presented it, ready to show and to record.
@@ -90,18 +90,16 @@ pub fn other_names_for_key(host_key: &HostKey) -> Vec<String> {
             continue;
         };
         for (index, raw) in content.lines().enumerate() {
-            let line = raw.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            let mut fields = line.split_whitespace();
-            let (Some(patterns), Some(_type), Some(key)) =
-                (fields.next(), fields.next(), fields.next())
-            else {
+            let Some(line) = parse_line(raw) else {
                 continue;
             };
-            if key == encoded {
-                found.push(format!("{}:{}: {patterns}", file.display(), index + 1));
+            // A @cert-authority or @revoked line is not a place this key is
+            // trusted, whatever blob it carries.
+            if line.marker.is_some() {
+                continue;
+            }
+            if line.key_base64 == encoded {
+                found.push(format!("{}:{}: {}", file.display(), index + 1, line.hosts_field));
             }
         }
     }

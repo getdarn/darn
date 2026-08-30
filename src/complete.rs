@@ -14,7 +14,7 @@ use clap_complete::CompletionCandidate;
 use rusqlite::{Connection, OpenFlags};
 
 use crate::db;
-use crate::ssh::{glob_match, known_hosts_files};
+use crate::ssh::known_hosts::{glob_match, known_hosts_files, parse_line, plain_names};
 
 /// How long to wait on a database another darn is writing. Long enough to
 /// ride out a single commit, short enough that the shell never feels stuck.
@@ -268,42 +268,15 @@ fn include_paths(pattern: &str, dir: Option<&Path>) -> Vec<PathBuf> {
 /// Hashed entries (`|1|salt|hash`) cannot be reversed into a name, and pattern
 /// entries name no single host, so both are skipped.
 fn known_hosts_names(content: &str) -> Vec<String> {
-    let mut names = Vec::new();
-    for line in content.lines() {
-        let mut line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        // @cert-authority / @revoked shift the fields along by one.
-        if let Some(rest) = line.strip_prefix('@') {
-            match rest.split_once(char::is_whitespace) {
-                Some((_marker, rest)) => line = rest.trim_start(),
-                None => continue,
-            }
-        }
-        let Some(patterns) = line.split_whitespace().next() else {
+    let mut names: Vec<String> = Vec::new();
+    for raw in content.lines() {
+        // Marker lines (@cert-authority, @revoked) still name hosts worth
+        // completing; darn stores the host bare, so `[host]:port` entries
+        // complete to the name alone.
+        let Some(line) = parse_line(raw) else {
             continue;
         };
-        if patterns.starts_with("|1|") {
-            continue;
-        }
-        for pattern in patterns.split(',') {
-            if pattern.starts_with('!') || pattern.contains('*') || pattern.contains('?') {
-                continue;
-            }
-            // `[host]:port` — darn stores the host on its own, with the port
-            // as a separate field, so complete to the bare name.
-            let name = match pattern.strip_prefix('[') {
-                Some(rest) => match rest.split_once(']') {
-                    Some((host, _port)) => host,
-                    None => continue,
-                },
-                None => pattern,
-            };
-            if !name.is_empty() {
-                names.push(name.to_string());
-            }
-        }
+        names.extend(plain_names(&line).map(str::to_string));
     }
     names.sort();
     names.dedup();

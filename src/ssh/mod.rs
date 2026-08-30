@@ -6,11 +6,10 @@
 mod auth;
 mod channel;
 mod keys;
-mod known_hosts;
+pub(crate) mod known_hosts;
 mod trust;
 
 pub use keys::{default_public_key, install_authorized_key_command, sudo_password_command};
-pub(crate) use known_hosts::{glob_match, known_hosts_files};
 pub use trust::{other_names_for_key, probe_host_key, remember_host_key};
 
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
