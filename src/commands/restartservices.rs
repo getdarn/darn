@@ -2,14 +2,15 @@ use std::path::Path;
 
 use rusqlite::Connection;
 
-use crate::commands::{
-    batch_exit_code, confirm, no_targets_message, record_restart_state, servers_for_all, session_id,
+use crate::commands::batch::{
+    finish_batch, host_result, record_restart_state, require_server, select_all_targets,
 };
+use crate::commands::{confirm, session_id};
 use crate::db::{self, Server};
 use crate::errors::DarnError;
 use crate::hosts::get_handler;
 use crate::orchestrator::{run_parallel, HostResult};
-use crate::render::{bold, dim, green, red, render_plan, render_results, yellow};
+use crate::render::{bold, dim, red, yellow};
 use crate::ssh::SshSession;
 
 pub fn run(
@@ -33,26 +34,18 @@ pub fn run(
     };
 
     let (servers, description) = if target == "all" {
-        let candidates = servers_for_all(&conn, include_no_all)?;
-        if let Some(empty) = no_targets_message(&conn, &candidates)? {
-            println!("{empty}");
+        let Some(servers) = select_all_targets(
+            &conn,
+            include_no_all,
+            |s| Ok(selectable(&conn, &s.hostname)? > 0),
+            "No hosts have services awaiting a restart.",
+        )?
+        else {
             return Ok(0);
-        }
-        let mut servers = Vec::new();
-        for s in candidates {
-            if selectable(&conn, &s.hostname)? > 0 {
-                servers.push(s);
-            }
-        }
-        if servers.is_empty() {
-            println!("{}", green("No hosts have services awaiting a restart."));
-            return Ok(0);
-        }
+        };
         (servers, "Restarting services".to_string())
     } else {
-        let Some(single) = db::get_server(&conn, target)? else {
-            return Err(DarnError::Other(format!("no such server: {target}")));
-        };
+        let single = require_server(&conn, target)?;
         if selectable(&conn, target)? == 0 {
             let (_, deferred) = db::count_pending_services(&conn, target)?;
             if deferred > 0 {
@@ -135,18 +128,7 @@ bouncing them disrupts running sessions."
             }
             Ok(message)
         };
-        match attempt() {
-            Ok(message) => HostResult {
-                hostname: server.hostname.clone(),
-                ok: true,
-                message,
-            },
-            Err(e) => HostResult {
-                hostname: server.hostname.clone(),
-                ok: false,
-                message: e.to_string(),
-            },
-        }
+        host_result(&server.hostname, attempt())
     };
 
     let results = run_parallel(
@@ -157,15 +139,5 @@ bouncing them disrupts running sessions."
         db_path,
         Some(&description),
     );
-    let title = if target == "all" {
-        "restartservices all results".to_string()
-    } else {
-        format!("restartservices {target}")
-    };
-    if dry_run {
-        render_plan(&format!("{title} — dry run"), &results);
-    } else {
-        render_results(&title, &results);
-    }
-    Ok(batch_exit_code(&results))
+    Ok(finish_batch("restartservices", target, dry_run, &results))
 }

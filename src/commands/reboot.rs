@@ -3,12 +3,15 @@ use std::time::{Duration, Instant};
 
 use rusqlite::Connection;
 
-use crate::commands::{batch_exit_code, confirm, no_targets_message, servers_for_all, session_id};
+use crate::commands::batch::{
+    finish_batch, host_result, require_server, select_all_targets, store_restart_state,
+};
+use crate::commands::{confirm, session_id};
 use crate::db::{self, Server};
 use crate::errors::DarnError;
 use crate::hosts::{get_handler, Reboot, RestartCheck};
 use crate::orchestrator::{run_parallel, HostResult};
-use crate::render::{bold, green, render_plan, render_results, restart_suffix, yellow};
+use crate::render::{bold, restart_suffix, yellow};
 use crate::ssh::{Recorder, SshSession};
 
 pub const BOOT_ID_CMD: &str = "cat /proc/sys/kernel/random/boot_id 2>/dev/null || true";
@@ -105,31 +108,24 @@ pub fn run(
     let conn = db::open_db(db_path)?;
 
     let (servers, description) = if target == "all" {
-        let candidates = servers_for_all(&conn, include_no_all)?;
-        if let Some(empty) = no_targets_message(&conn, &candidates)? {
-            println!("{empty}");
+        let Some(servers) = select_all_targets(
+            &conn,
+            include_no_all,
+            |s| {
+                Ok(if force {
+                    s.reboot_required.as_deref() != Some("no")
+                } else {
+                    s.reboot_required.as_deref() == Some("yes")
+                })
+            },
+            "No hosts are waiting on a reboot.",
+        )?
+        else {
             return Ok(0);
-        }
-        let servers: Vec<Server> = if force {
-            candidates
-                .into_iter()
-                .filter(|s| s.reboot_required.as_deref() != Some("no"))
-                .collect()
-        } else {
-            candidates
-                .into_iter()
-                .filter(|s| s.reboot_required.as_deref() == Some("yes"))
-                .collect()
         };
-        if servers.is_empty() {
-            println!("{}", green("No hosts are waiting on a reboot."));
-            return Ok(0);
-        }
         (servers, "Rebooting".to_string())
     } else {
-        let Some(single) = db::get_server(&conn, target)? else {
-            return Err(DarnError::Other(format!("no such server: {target}")));
-        };
+        let single = require_server(&conn, target)?;
         if !force && single.reboot_required.as_deref() != Some("yes") {
             let state = single
                 .reboot_required
@@ -189,35 +185,17 @@ run `darn update` first, or pass --force"
             }
             let (elapsed, check) =
                 wait_for_reboot(server, thread_conn, &session_id, &previous_boot_id, timeout)?;
-            db::set_reboot_state(
-                thread_conn,
-                &server.hostname,
-                Some(check.reboot.as_str()),
-                check.reboot_detail.as_deref(),
-            )?;
-            db::replace_pending_services(thread_conn, &server.hostname, &check.services)?;
+            store_restart_state(thread_conn, &server.hostname, &check)?;
             Ok(format!(
                 "rebooted (up in {elapsed:.0}s){}",
                 restart_suffix(thread_conn, &server.hostname, Some(check.reboot.as_str()))
             ))
         };
-        match attempt() {
-            Ok(message) => HostResult {
-                hostname: server.hostname.clone(),
-                ok: true,
-                message,
-            },
-            Err(e) => {
-                if matches!(e, DarnError::Timeout(_)) {
-                    let _ = db::set_reboot_state(thread_conn, &server.hostname, None, None);
-                }
-                HostResult {
-                    hostname: server.hostname.clone(),
-                    ok: false,
-                    message: e.to_string(),
-                }
-            }
+        let outcome = attempt();
+        if let Err(DarnError::Timeout(_)) = &outcome {
+            let _ = db::set_reboot_state(thread_conn, &server.hostname, None, None);
         }
+        host_result(&server.hostname, outcome)
     };
 
     let results = run_parallel(
@@ -228,15 +206,5 @@ run `darn update` first, or pass --force"
         db_path,
         Some(&description),
     );
-    let title = if target == "all" {
-        "reboot all results".to_string()
-    } else {
-        format!("reboot {target}")
-    };
-    if dry_run {
-        render_plan(&format!("{title} — dry run"), &results);
-    } else {
-        render_results(&title, &results);
-    }
-    Ok(batch_exit_code(&results))
+    Ok(finish_batch("reboot", target, dry_run, &results))
 }

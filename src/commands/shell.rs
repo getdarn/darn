@@ -2,6 +2,7 @@ use std::io::ErrorKind;
 use std::path::Path;
 use std::process::Command;
 
+use crate::commands::batch::require_server;
 use crate::db::{self, Server};
 use crate::errors::DarnError;
 
@@ -39,8 +40,7 @@ pub fn run(db_path: Option<&Path>, hostname: &str) -> Result<i32, DarnError> {
     // terminal, rather than being held open for the length of the session.
     let server = {
         let conn = db::open_db(db_path)?;
-        db::get_server(&conn, hostname)?
-            .ok_or_else(|| DarnError::Other(format!("no such server: {hostname}")))?
+        require_server(&conn, hostname)?
     };
 
     let status = Command::new("ssh")

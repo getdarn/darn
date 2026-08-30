@@ -1,6 +1,7 @@
 use std::path::Path;
 
-use crate::commands::{batch_exit_code, record_restart_state, session_id};
+use crate::commands::batch::{batch_exit_code, host_result, record_restart_state};
+use crate::commands::session_id;
 use crate::db::{self, Server};
 use crate::errors::DarnError;
 use crate::hosts::get_handler;
@@ -45,21 +46,11 @@ pub fn run(db_path: Option<&Path>, jobs: usize) -> Result<i32, DarnError> {
                     Some(restarts.reboot.as_str()),
                 ))
         };
-        match attempt() {
-            Ok(message) => HostResult {
-                hostname: server.hostname.clone(),
-                ok: true,
-                message,
-            },
-            Err(e) => {
-                let _ = db::replace_pending_patches(thread_conn, &server.hostname, &[], false);
-                HostResult {
-                    hostname: server.hostname.clone(),
-                    ok: false,
-                    message: e.to_string(),
-                }
-            }
+        let outcome = attempt();
+        if outcome.is_err() {
+            let _ = db::replace_pending_patches(thread_conn, &server.hostname, &[], false);
         }
+        host_result(&server.hostname, outcome)
     };
 
     let results = run_parallel(

@@ -1,13 +1,14 @@
 use std::path::Path;
 
-use crate::commands::{
-    batch_exit_code, no_targets_message, record_restart_state, servers_for_all, session_id,
+use crate::commands::batch::{
+    finish_batch, host_result, record_restart_state, require_server, select_all_targets,
 };
+use crate::commands::session_id;
 use crate::db::{self, Server};
 use crate::errors::DarnError;
 use crate::hosts::get_handler;
 use crate::orchestrator::{run_parallel, HostResult};
-use crate::render::{green, render_plan, render_results, restart_suffix, stream_to_terminal};
+use crate::render::{restart_suffix, stream_to_terminal};
 use crate::ssh::SshSession;
 
 /// How many patches this run would actually install on a host.
@@ -48,36 +49,28 @@ pub fn run(
     let conn = db::open_db(db_path)?;
 
     let (servers, description) = if target == "all" {
-        let candidates = servers_for_all(&conn, include_no_all)?;
-        if let Some(empty) = no_targets_message(&conn, &candidates)? {
-            println!("{empty}");
-            return Ok(0);
-        }
+        let kind = if security {
+            "security patches"
+        } else if non_security {
+            "non-security patches"
+        } else {
+            "patches"
+        };
         // Selection comes from the last discovery, as it does for `reboot all`
         // and `restartservices all`: a host with nothing pending would only be
         // connected to, updated and left alone.
-        let mut servers = Vec::new();
-        for s in candidates {
-            if selectable(&conn, &s.hostname, security, non_security)? > 0 {
-                servers.push(s);
-            }
-        }
-        if servers.is_empty() {
-            let kind = if security {
-                "security patches"
-            } else if non_security {
-                "non-security patches"
-            } else {
-                "patches"
-            };
-            println!("{}", green(&format!("No hosts have {kind} pending.")));
+        let Some(servers) = select_all_targets(
+            &conn,
+            include_no_all,
+            |s| Ok(selectable(&conn, &s.hostname, security, non_security)? > 0),
+            &format!("No hosts have {kind} pending."),
+        )?
+        else {
             return Ok(0);
-        }
+        };
         (servers, "Applying patches".to_string())
     } else {
-        let Some(single) = db::get_server(&conn, target)? else {
-            return Err(DarnError::Other(format!("no such server: {target}")));
-        };
+        let single = require_server(&conn, target)?;
         jobs = 1;
         (vec![single], format!("Upgrading {target}"))
     };
@@ -125,33 +118,12 @@ pub fn run(
                 )
             ))
         };
-        match attempt() {
-            Ok(message) => HostResult {
-                hostname: server.hostname.clone(),
-                ok: true,
-                message,
-            },
-            Err(e) => HostResult {
-                hostname: server.hostname.clone(),
-                ok: false,
-                message: e.to_string(),
-            },
-        }
+        host_result(&server.hostname, attempt())
     };
 
     let progress = (!stream).then_some(description.as_str());
     let results = run_parallel(&servers, work, &session_id, jobs, db_path, progress);
-    let title = if target == "all" {
-        "upgrade all results".to_string()
-    } else {
-        format!("upgrade {target}")
-    };
-    if dry_run {
-        render_plan(&format!("{title} — dry run"), &results);
-    } else {
-        render_results(&title, &results);
-    }
-    Ok(batch_exit_code(&results))
+    Ok(finish_batch("upgrade", target, dry_run, &results))
 }
 
 #[cfg(test)]
