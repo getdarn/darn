@@ -11,9 +11,11 @@ use rusqlite::Connection;
 use crate::commands::confirm;
 use crate::db::Server;
 use crate::errors::DarnError;
+use crate::hosts::MikrotikHandler;
 use crate::orchestrator::command_recorder;
 use crate::password::{read_password, stdin_is_terminal};
 use crate::provision::{self, DARN_USER};
+use crate::quote::sh_quote;
 use crate::render::{bold, green, yellow};
 use crate::ssh::{self, SshSession, DEFAULT_CONNECT_TIMEOUT};
 
@@ -186,6 +188,10 @@ pub(super) fn install_public_key(
 /// contact it can lack both. darn's own SSH layer finds that out, since that
 /// layer is what every command but `shell` connects with.
 ///
+/// A stored RouterOS host is not offered the key install, since darn's
+/// installer is POSIX shell and would take the password only to fail on its
+/// first command; it is told how to do it by hand instead.
+///
 /// Only those two failures are acted on, and only at a terminal: without one
 /// there is nobody to ask, and the command goes on exactly as it would have.
 /// Anything else — a host that is down, a *changed* host key, a name only
@@ -231,6 +237,10 @@ pub(crate) fn settle_access(
                     )));
                 }
             }
+            Err(DarnError::SshAuth(_)) if server.host_type == MikrotikHandler::TYPE => {
+                explain_routeros_key_install(&login);
+                return Ok(());
+            }
             // No need to reconnect afterwards to prove the key works: the
             // caller is about to, and says so in its own way if not.
             Err(DarnError::SshAuth(why)) => {
@@ -240,6 +250,65 @@ pub(crate) fn settle_access(
             _ => return Ok(()),
         }
     }
+}
+
+/// Say how to put our public key on a RouterOS host, which darn cannot do: it
+/// has no POSIX shell to run the installer in, only its own console.
+fn explain_routeros_key_install(login: &Login<'_>) {
+    let account = format!("{}@{}", login.ssh_user, login.hostname);
+    println!("{}", yellow(&format!("No SSH key works for {account}.")));
+    let Some(public_key_path) = ssh::default_public_key(login.key_path) else {
+        println!(
+            "{}",
+            yellow(&format!(
+                "No public key found {}; create one with `ssh-keygen -t ed25519`, then \
+                 import it on the router with `/user ssh-keys import`.",
+                where_key_was_sought(login.key_path)
+            ))
+        );
+        return;
+    };
+    let [copy, import] = routeros_key_commands(login, &public_key_path);
+    println!(
+        "darn cannot install keys on RouterOS. Copy {} to the router and import it \
+         there:",
+        bold(&public_key_path.display().to_string())
+    );
+    println!("    {copy}");
+    println!("    {import}");
+}
+
+/// The two steps that authorise `public_key` on a RouterOS host: an `scp` to
+/// run locally, and the console command that turns the uploaded file into a
+/// key for the account darn logs in as.
+fn routeros_key_commands(login: &Login<'_>, public_key: &Path) -> [String; 2] {
+    let port = if login.port == 22 {
+        String::new()
+    } else {
+        format!("-P {} ", login.port)
+    };
+    // scp reads `host:` as the end of the host, so an IPv6 literal needs the
+    // brackets that ssh itself does without.
+    let host = if login.hostname.contains(':') {
+        format!("[{}]", login.hostname)
+    } else {
+        login.hostname.to_string()
+    };
+    let destination = sh_quote(&format!("{}@{host}:", login.ssh_user));
+    let file_name = public_key
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    [
+        format!(
+            "scp {port}{} {destination}",
+            sh_quote(&public_key.display().to_string())
+        ),
+        format!(
+            "/user ssh-keys import public-key-file={file_name} user={}",
+            login.ssh_user
+        ),
+    ]
 }
 
 /// Make sure darn will be able to escalate on a host it is about to manage,
@@ -443,4 +512,38 @@ fn sudo_password_works(session: &mut SshSession<'_>, password: &str) -> Result<b
         )));
     }
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn login<'a>(hostname: &'a str, port: u16) -> Login<'a> {
+        Login {
+            hostname,
+            ssh_user: "admin",
+            port,
+            key_path: None,
+        }
+    }
+
+    #[test]
+    fn routeros_steps_copy_the_key_then_import_it_for_the_login_user() {
+        let [copy, import] = routeros_key_commands(
+            &login("router", 22),
+            Path::new("/home/me/.ssh/id_ed25519.pub"),
+        );
+        assert_eq!(copy, "scp /home/me/.ssh/id_ed25519.pub admin@router:");
+        assert_eq!(
+            import,
+            "/user ssh-keys import public-key-file=id_ed25519.pub user=admin"
+        );
+    }
+
+    #[test]
+    fn routeros_scp_carries_the_port_and_brackets_an_ipv6_literal() {
+        let [copy, _] =
+            routeros_key_commands(&login("2001:db8::1", 2222), Path::new("/k/my key.pub"));
+        assert_eq!(copy, "scp -P 2222 '/k/my key.pub' 'admin@[2001:db8::1]:'");
+    }
 }

@@ -8,6 +8,7 @@ use rusqlite::Connection;
 
 use crate::db::{self, Server};
 use crate::errors::DarnError;
+use crate::hosts::MikrotikHandler;
 use crate::ssh::{Recorder, SshSession, DEFAULT_CONNECT_TIMEOUT};
 
 #[derive(Clone, Debug)]
@@ -135,17 +136,22 @@ where
     );
     match connected {
         Ok(mut session) => work(server, &mut session, &work_conn),
-        Err(e) => fail(connect_failure(e, &server.hostname)),
+        Err(e) => fail(connect_failure(e, server)),
     }
 }
 
 /// A connect failure's message, with the way out added where darn has one:
 /// `darn update HOST` at a terminal asks about an unknown host key and offers
 /// to install a key where none works, and every batch command can then get in.
-fn connect_failure(e: DarnError, hostname: &str) -> String {
+/// RouterOS is the exception for the key, which darn cannot install there.
+fn connect_failure(e: DarnError, server: &Server) -> String {
+    let hostname = &server.hostname;
     match e {
         DarnError::SshHostKeyUnknown(msg) => {
             format!("{msg}; run `darn update {hostname}` from a terminal to accept its key")
+        }
+        DarnError::SshAuth(msg) if server.host_type == MikrotikHandler::TYPE => {
+            format!("{msg}; install your public key on the router with `/user ssh-keys import`")
         }
         DarnError::SshAuth(msg) => {
             format!("{msg}; run `darn update {hostname}` from a terminal to install your key")
@@ -183,24 +189,42 @@ mod tests {
             "failed to connect to web-01: server 'web-01' not found in known_hosts".to_string(),
         );
         assert_eq!(
-            connect_failure(unknown, "web-01"),
+            connect_failure(unknown, &server("web-01")),
             "failed to connect to web-01: server 'web-01' not found in known_hosts; \
              run `darn update web-01` from a terminal to accept its key"
         );
         let refused =
             DarnError::SshAuth("failed to connect to web-01: authentication failed".to_string());
         assert_eq!(
-            connect_failure(refused, "web-01"),
+            connect_failure(refused, &server("web-01")),
             "failed to connect to web-01: authentication failed; \
              run `darn update web-01` from a terminal to install your key"
         );
     }
 
     #[test]
+    fn a_routeros_key_failure_points_at_the_router_not_at_darn() {
+        let router = Server {
+            host_type: MikrotikHandler::TYPE.to_string(),
+            ..server("gw")
+        };
+        let refused =
+            DarnError::SshAuth("failed to connect to gw: authentication failed".to_string());
+        assert_eq!(
+            connect_failure(refused, &router),
+            "failed to connect to gw: authentication failed; \
+             install your public key on the router with `/user ssh-keys import`"
+        );
+        // The host key is still darn's to ask about, RouterOS or not.
+        let unknown = DarnError::SshHostKeyUnknown("unknown".to_string());
+        assert!(connect_failure(unknown, &router).contains("`darn update gw`"));
+    }
+
+    #[test]
     fn other_connect_failures_are_passed_through_unadorned() {
         let mismatch = DarnError::Ssh("host key mismatch for 'web-01' (possible MITM)".to_string());
         assert_eq!(
-            connect_failure(mismatch, "web-01"),
+            connect_failure(mismatch, &server("web-01")),
             "host key mismatch for 'web-01' (possible MITM)"
         );
     }

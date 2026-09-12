@@ -199,6 +199,9 @@ before rather than hang — and Ctrl+C cancels.
   fails to connect as it would have, while `shell` hands over to ssh, which
   may still get in with something darn does not use — a key named in
   `~/.ssh/config`, say, or one with a passphrase that is not in the agent.
+  Both commands know a stored RouterOS host, and rather than asking for a
+  password they print the `scp` and `/user ssh-keys import` steps that
+  install the key by hand.
 - **No passwordless sudo** — the account connects fine but `sudo -n` fails —
   offers to create a `darn` user on the host that has it. Say yes and darn
   asks for the account's password (reusing the one you just typed, if you

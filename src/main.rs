@@ -52,7 +52,8 @@ enum Command {
     /// `server add` would have asked of a host that arrived by `server
     /// import`: an unknown host key is shown for you to accept, and where no
     /// key of yours works you are offered your public key installed with the
-    /// account's password. Press Enter at that prompt to skip it.
+    /// account's password. Press Enter at that prompt to skip it. A RouterOS
+    /// host is told how to install the key by hand instead, since darn cannot.
     Update {
         #[arg(add = ArgValueCandidates::new(complete::targets))]
         target: Option<String>,
@@ -173,7 +174,8 @@ enum Command {
     /// import`: an unknown host key is shown for you to accept, and where no
     /// key of yours works you are offered your public key installed with the
     /// account's password. Press Enter at that prompt to skip it and leave
-    /// ssh to log in however it can.
+    /// ssh to log in however it can. A RouterOS host is told how to install
+    /// the key by hand instead, since darn cannot.
     Shell {
         #[arg(add = ArgValueCandidates::new(complete::hostnames))]
         hostname: String,
