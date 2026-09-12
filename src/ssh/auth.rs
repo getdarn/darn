@@ -49,7 +49,7 @@ pub(super) fn authenticate(
     if sess.authenticated() {
         Ok(())
     } else {
-        Err("Authentication failed.".to_string())
+        Err("authentication failed".to_string())
     }
 }
 

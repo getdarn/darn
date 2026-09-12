@@ -44,7 +44,18 @@ enum Command {
     Server(ServerCommand),
 
     /// Discover which hosts need patching (runs in parallel).
+    ///
+    /// With no TARGET, or the literal 'all', every host is probed — including
+    /// those marked --no-all, since looking changes nothing.
+    ///
+    /// Naming a host probes only that one, and at a terminal first asks what
+    /// `server add` would have asked of a host that arrived by `server
+    /// import`: an unknown host key is shown for you to accept, and where no
+    /// key of yours works you are offered your public key installed with the
+    /// account's password. Press Enter at that prompt to skip it.
     Update {
+        #[arg(add = ArgValueCandidates::new(complete::targets))]
+        target: Option<String>,
         /// Maximum number of hosts to work on in parallel.
         #[arg(short, long, default_value_t = 10)]
         jobs: usize,
@@ -156,6 +167,13 @@ enum Command {
     /// Connects with the user, port and key stored for the host and hands the
     /// terminal to ssh(1), so ssh must be on PATH. Nothing about the session
     /// is recorded.
+    ///
+    /// At a terminal, darn first checks it can get in itself, and asks what
+    /// `server add` would have asked of a host that arrived by `server
+    /// import`: an unknown host key is shown for you to accept, and where no
+    /// key of yours works you are offered your public key installed with the
+    /// account's password. Press Enter at that prompt to skip it and leave
+    /// ssh to log in however it can.
     Shell {
         #[arg(add = ArgValueCandidates::new(complete::hostnames))]
         hostname: String,
@@ -347,7 +365,7 @@ fn run(cli: Cli) -> Result<i32, DarnError> {
             }
             ServerCommand::Reset { yes } => commands::server::reset(db, yes),
         },
-        Command::Update { jobs } => commands::update::run(db, jobs),
+        Command::Update { target, jobs } => commands::update::run(db, target.as_deref(), jobs),
         Command::Upgrade {
             target,
             jobs,

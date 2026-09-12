@@ -10,17 +10,21 @@ use crate::ssh::{self, DEFAULT_CONNECT_TIMEOUT};
 
 use super::ANSWER_ATTEMPTS;
 
-/// Show an unknown host's key and record it if the user says to.
+/// Show an unknown host's key and record it if the user says to, returning
+/// whether they did; the caller says what a refusal means for it.
 ///
 /// This is trust on first use, and the wording is ssh(1)'s because that is
 /// the text a sysadmin already knows how to weigh. What gets recorded is
 /// verified by the connect that follows, so a key substituted between the
 /// question and the answer fails as a mismatch instead of being trusted.
-pub(super) fn accept_host_key(hostname: &str, port: u16, why: &str) -> Result<(), DarnError> {
+///
+/// The no-terminal refusal names `darn server add` because that is the only
+/// caller that gets here without one; `settle_access` asks nothing then.
+pub(super) fn accept_host_key(hostname: &str, port: u16, why: &str) -> Result<bool, DarnError> {
     if !stdin_is_terminal() {
         return Err(DarnError::SshHostKeyUnknown(format!(
-            "{why}\nOr run `darn server add` from a terminal to be shown the key \
-             and asked about it here."
+            "{why}\nConnect once with ssh to accept its key, or run `darn server add` \
+             from a terminal to be shown the key and asked about it here."
         )));
     }
 
@@ -45,9 +49,7 @@ pub(super) fn accept_host_key(hostname: &str, port: u16, why: &str) -> Result<()
     }
 
     if !confirm_fingerprint(&host_key.fingerprint)? {
-        return Err(DarnError::SshHostKeyUnknown(format!(
-            "host key not accepted; {hostname} was not added"
-        )));
+        return Ok(false);
     }
 
     let file = ssh::remember_host_key(&host_key, hostname, port)?;
@@ -57,7 +59,7 @@ pub(super) fn accept_host_key(hostname: &str, port: u16, why: &str) -> Result<()
         host_key.algorithm,
         file.display()
     );
-    Ok(())
+    Ok(true)
 }
 
 /// Ask ssh(1)'s question, accepting `yes` or the fingerprint pasted back.

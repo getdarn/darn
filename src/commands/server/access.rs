@@ -1,12 +1,15 @@
 //! Getting into a host being added, and making sure darn can escalate once
 //! there: key installation against a password, and the offer of a dedicated
-//! `darn` user when the account itself cannot sudo.
+//! `darn` user when the account itself cannot sudo. `settle_access` offers
+//! the first of those, and the host-key question before it, to the commands
+//! that meet a stored host that was imported rather than added.
 
 use std::path::Path;
 
 use rusqlite::Connection;
 
 use crate::commands::confirm;
+use crate::db::Server;
 use crate::errors::DarnError;
 use crate::orchestrator::command_recorder;
 use crate::password::{read_password, stdin_is_terminal};
@@ -14,8 +17,9 @@ use crate::provision::{self, DARN_USER};
 use crate::render::{bold, green, yellow};
 use crate::ssh::{self, SshSession, DEFAULT_CONNECT_TIMEOUT};
 
-use super::add::{FirstContact, NewHost};
-use super::PASSWORD_ATTEMPTS;
+use super::add::FirstContact;
+use super::trust::accept_host_key;
+use super::{Login, PASSWORD_ATTEMPTS};
 
 /// Where a public key was searched for, for messages about not finding one.
 fn where_key_was_sought(key_path: Option<&str>) -> String {
@@ -33,35 +37,45 @@ fn read_public_key(path: &Path) -> Result<String, DarnError> {
         .to_string())
 }
 
+/// How a round of password prompts ended. The caller says what each means.
+enum Prompted<T> {
+    Accepted(T),
+    /// Every attempt was refused.
+    Refused,
+    /// Nothing was typed: silence at a password prompt is a cancel, not an
+    /// attempt.
+    Empty,
+}
+
 /// Ask for a password up to PASSWORD_ATTEMPTS times, handing each one to
 /// `accept`. A `Some` from `accept` ends the loop with that value; a `None`
-/// prints `retry_message` and asks again. `Ok(None)` means every attempt was
-/// refused, and the caller says what giving up means. An empty entry raises
-/// `empty_error`: silence at a password prompt is a cancel, not an attempt.
+/// prints `retry_message` and asks again.
 fn prompt_password_loop<T>(
     prompt: &str,
-    empty_error: impl Fn() -> DarnError,
     retry_message: &str,
     mut accept: impl FnMut(&str) -> Result<Option<T>, DarnError>,
-) -> Result<Option<T>, DarnError> {
+) -> Result<Prompted<T>, DarnError> {
     for attempt in 1..=PASSWORD_ATTEMPTS {
         let password = read_password(prompt)
             .map_err(|e| DarnError::Other(format!("cannot read password: {e}")))?;
         if password.is_empty() {
-            return Err(empty_error());
+            return Ok(Prompted::Empty);
         }
         if let Some(accepted) = accept(&password)? {
-            return Ok(Some(accepted));
+            return Ok(Prompted::Accepted(accepted));
         }
         if attempt < PASSWORD_ATTEMPTS {
             println!("{}", yellow(retry_message));
         }
     }
-    Ok(None)
+    Ok(Prompted::Refused)
 }
 
 /// Install the local public key on a host that accepts no key of ours, using
-/// a password typed at the prompt, and return that password.
+/// a password typed at the prompt, and return that password — or `None` if
+/// the user entered nothing, which the caller decides the meaning of.
+/// `alternative` finishes the sentence that introduces the prompt, saying
+/// what to do instead of typing a password ("ctrl-c to cancel").
 ///
 /// Says which key is going where before asking, since a password prompt from
 /// a tool that has never wanted one needs to account for itself. The password
@@ -69,12 +83,16 @@ fn prompt_password_loop<T>(
 /// secret a second time; it is held in memory for the rest of the command and
 /// is neither stored nor logged. What goes in the command log is the
 /// authorized_keys command, whose only secret-shaped content is a public key.
+///
+/// The no-terminal refusal names `darn server add` because that is the only
+/// caller that gets here without one; `settle_access` asks nothing then.
 pub(super) fn install_public_key(
     conn: &Connection,
-    host: &NewHost<'_>,
+    host: &Login<'_>,
     session_id: &str,
     why: &str,
-) -> Result<String, DarnError> {
+    alternative: &str,
+) -> Result<Option<String>, DarnError> {
     let Some(public_key_path) = ssh::default_public_key(host.key_path) else {
         return Err(DarnError::SshAuth(format!(
             "{why}\nNo public key found {} to install; \
@@ -100,7 +118,7 @@ pub(super) fn install_public_key(
     // password is wanted; spelling that out again only buries it.
     println!(
         "Enter password to copy public key from {} to authorized_keys on server, \
-         or ctrl-c to cancel.",
+         or {alternative}.",
         bold(&public_key_path.display().to_string())
     );
 
@@ -110,7 +128,6 @@ pub(super) fn install_public_key(
     let mut refusal = None;
     let opened = prompt_password_loop(
         &format!("{account}'s password: "),
-        || DarnError::SshAuth(format!("no password entered; {account} was not added")),
         "Permission denied, please try again.",
         |password| match SshSession::connect_with_password(
             host.hostname,
@@ -128,11 +145,15 @@ pub(super) fn install_public_key(
             Err(e) => Err(e),
         },
     )?;
-    let Some((mut session, accepted)) = opened else {
-        let refusal = refusal.unwrap_or_else(|| format!("could not authenticate to {account}"));
-        return Err(DarnError::SshAuth(format!(
-            "{refusal}; giving up after {PASSWORD_ATTEMPTS} attempts"
-        )));
+    let (mut session, accepted) = match opened {
+        Prompted::Accepted(opened) => opened,
+        Prompted::Empty => return Ok(None),
+        Prompted::Refused => {
+            let refusal = refusal.unwrap_or_else(|| format!("could not authenticate to {account}"));
+            return Err(DarnError::SshAuth(format!(
+                "{refusal}; giving up after {PASSWORD_ATTEMPTS} attempts"
+            )));
+        }
     };
 
     session
@@ -154,7 +175,71 @@ pub(super) fn install_public_key(
         green("Installed"),
         public_key_path.display()
     );
-    Ok(accepted)
+    Ok(Some(accepted))
+}
+
+/// Before a command connects to a stored server, offer what `server add` would
+/// have: an unknown host key recorded, and our public key installed where
+/// none of ours works. `darn shell` and a single-host `darn update` call this.
+///
+/// A host that came in by `server import` was never vouched for, so on first
+/// contact it can lack both. darn's own SSH layer finds that out, since that
+/// layer is what every command but `shell` connects with.
+///
+/// Only those two failures are acted on, and only at a terminal: without one
+/// there is nobody to ask, and the command goes on exactly as it would have.
+/// Anything else — a host that is down, a *changed* host key, a name only
+/// ~/.ssh/config can resolve — is likewise left for the command to meet and
+/// report. For the same reason an empty password skips the key install rather
+/// than cancelling: the command still gets whatever answer it would have got,
+/// and for `shell` that may be success, since ssh(1) can use keys darn cannot
+/// — one with a passphrase that is not in the agent, say.
+///
+/// A key installed here is recorded under `session_id`, so the caller can have
+/// it show in `darn log` beside whatever it goes on to run.
+pub(crate) fn settle_access(
+    conn: &Connection,
+    server: &Server,
+    session_id: &str,
+) -> Result<(), DarnError> {
+    if !stdin_is_terminal() {
+        return Ok(());
+    }
+    let login = Login {
+        hostname: &server.hostname,
+        ssh_user: &server.ssh_user,
+        port: server.ssh_port,
+        key_path: server.ssh_key_path.as_deref(),
+    };
+    let mut asked_about_key = false;
+    loop {
+        let attempt = SshSession::connect(
+            login.hostname,
+            login.ssh_user,
+            login.port,
+            login.key_path,
+            None,
+            DEFAULT_CONNECT_TIMEOUT,
+        );
+        match attempt {
+            Err(DarnError::SshHostKeyUnknown(why)) if !asked_about_key => {
+                asked_about_key = true;
+                if !accept_host_key(login.hostname, login.port, &why)? {
+                    return Err(DarnError::SshHostKeyUnknown(format!(
+                        "host key not accepted; not connecting to {}",
+                        login.hostname
+                    )));
+                }
+            }
+            // No need to reconnect afterwards to prove the key works: the
+            // caller is about to, and says so in its own way if not.
+            Err(DarnError::SshAuth(why)) => {
+                install_public_key(conn, &login, session_id, &why, "press Enter to skip")?;
+                return Ok(());
+            }
+            _ => return Ok(()),
+        }
+    }
 }
 
 /// Make sure darn will be able to escalate on a host it is about to manage,
@@ -167,7 +252,7 @@ pub(super) fn install_public_key(
 pub(super) fn ensure_privileges<'a>(
     conn: &'a Connection,
     session: &mut SshSession<'_>,
-    host: &NewHost<'a>,
+    host: &Login<'a>,
     session_id: &'a str,
     contact: &FirstContact,
 ) -> Result<Option<SshSession<'a>>, DarnError> {
@@ -310,21 +395,20 @@ fn has_passwordless_sudo(session: &mut SshSession<'_>) -> Result<bool, DarnError
 fn ask_sudo_password(session: &mut SshSession<'_>, account: &str) -> Result<String, DarnError> {
     let accepted = prompt_password_loop(
         &format!("[sudo] password for {account}: "),
-        || {
-            DarnError::Other(format!(
-                "no password entered; the {DARN_USER} user was not created"
-            ))
-        },
         "Sorry, try again.",
         |password| Ok(sudo_password_works(session, password)?.then(|| password.to_string())),
     )?;
-    accepted.ok_or_else(|| {
-        DarnError::Other(format!(
+    match accepted {
+        Prompted::Accepted(password) => Ok(password),
+        Prompted::Empty => Err(DarnError::Other(format!(
+            "no password entered; the {DARN_USER} user was not created"
+        ))),
+        Prompted::Refused => Err(DarnError::Other(format!(
             "sudo did not accept a password for {account} after {PASSWORD_ATTEMPTS} attempts; \
              the {DARN_USER} user was not created. Answer 'n' when asked about it to add the \
              host as {account} instead."
-        ))
-    })
+        ))),
+    }
 }
 
 /// Spend a password on `sudo -v` alone, so a wrong one costs nothing.

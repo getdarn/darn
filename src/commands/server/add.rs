@@ -18,14 +18,7 @@ use crate::target::parse_target;
 
 use super::access::{ensure_privileges, install_public_key};
 use super::trust::accept_host_key;
-
-/// The host being added, as the user asked for it.
-pub(super) struct NewHost<'a> {
-    pub(super) hostname: &'a str,
-    pub(super) ssh_user: &'a str,
-    pub(super) port: u16,
-    pub(super) key_path: Option<&'a str>,
-}
+use super::Login;
 
 pub fn add(
     db_path: Option<&Path>,
@@ -45,7 +38,7 @@ pub fn add(
     let port = target_port.or(port).unwrap_or(22);
     let conn = db::open_db(db_path)?;
     let session_id = session_id();
-    let host = NewHost {
+    let host = Login {
         hostname: &hostname,
         ssh_user: &ssh_user,
         port,
@@ -119,7 +112,7 @@ pub(super) struct FirstContact {
 /// credentials with a server whose identity is still unestablished.
 fn connect_to_new_host<'a>(
     conn: &'a Connection,
-    host: &NewHost<'a>,
+    host: &Login<'a>,
     session_id: &'a str,
 ) -> Result<(SshSession<'a>, FirstContact), DarnError> {
     let mut asked_about_key = false;
@@ -141,14 +134,27 @@ fn connect_to_new_host<'a>(
             // Never seen this host before. Ask, the way ssh(1) asks.
             Err(DarnError::SshHostKeyUnknown(why)) if !asked_about_key => {
                 asked_about_key = true;
-                accept_host_key(host.hostname, host.port, &why)?;
+                if !accept_host_key(host.hostname, host.port, &why)? {
+                    return Err(DarnError::SshHostKeyUnknown(format!(
+                        "host key not accepted; {} was not added",
+                        host.hostname
+                    )));
+                }
             }
             // The host is reachable and its key is known; we simply have
             // nothing it accepts. Offer to put a key there rather than
             // sending the user off to ssh-copy-id and back.
             Err(DarnError::SshAuth(why)) if !contact.key_installed => {
                 contact.key_installed = true;
-                contact.password = Some(install_public_key(conn, host, session_id, &why)?);
+                let installed =
+                    install_public_key(conn, host, session_id, &why, "ctrl-c to cancel")?;
+                let Some(password) = installed else {
+                    return Err(DarnError::SshAuth(format!(
+                        "no password entered; {}@{} was not added",
+                        host.ssh_user, host.hostname
+                    )));
+                };
+                contact.password = Some(password);
             }
             Err(e) => return Err(e),
         }

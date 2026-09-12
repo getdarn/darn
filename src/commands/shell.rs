@@ -3,6 +3,8 @@ use std::path::Path;
 use std::process::Command;
 
 use crate::commands::batch::require_server;
+use crate::commands::server::settle_access;
+use crate::commands::session_id;
 use crate::db::{self, Server};
 use crate::errors::DarnError;
 
@@ -33,14 +35,17 @@ fn ssh_args(server: &Server) -> Vec<String> {
 /// Delegating rather than driving a PTY through libssh2 is deliberate: the user
 /// gets raw-mode handling, window resizing, escape sequences, ~/.ssh/config and
 /// passphrase prompts from ssh itself, none of which darn's own non-interactive
-/// SSH layer offers. Nothing is recorded in the command log — an interactive
-/// session has no discrete commands to store.
+/// SSH layer offers. The session itself is not recorded in the command log —
+/// it has no discrete commands to store — though a key installed on the way
+/// in is, as it is by `server add`.
 pub fn run(db_path: Option<&Path>, hostname: &str) -> Result<i32, DarnError> {
     // Scoped so the database connection is closed before ssh takes the
     // terminal, rather than being held open for the length of the session.
     let server = {
         let conn = db::open_db(db_path)?;
-        require_server(&conn, hostname)?
+        let server = require_server(&conn, hostname)?;
+        settle_access(&conn, &server, &session_id())?;
+        server
     };
 
     let status = Command::new("ssh")

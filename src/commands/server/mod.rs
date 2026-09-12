@@ -2,12 +2,17 @@
 //! lives in the submodules: `add` drives the flow, `trust` settles the host
 //! key, `access` settles login and sudo, `transfer` moves the list to and
 //! from YAML. What remains here is the plain database CRUD.
+//!
+//! The host-key and key-install prompts are also lent, as `settle_access`, to
+//! `darn shell` and a single-host `darn update`, for a host that reached the
+//! list by import and so was never vouched for.
 
 mod access;
 mod add;
 mod transfer;
 mod trust;
 
+pub(crate) use access::settle_access;
 pub use add::add;
 pub use transfer::{export, import};
 
@@ -17,6 +22,15 @@ use crate::commands::confirm;
 use crate::db;
 use crate::errors::DarnError;
 use crate::render::{bold, green, render_server_list, yellow};
+
+/// The account darn is trying to get into: the host being added, as the user
+/// asked for it, or a stored server on first contact.
+struct Login<'a> {
+    hostname: &'a str,
+    ssh_user: &'a str,
+    port: u16,
+    key_path: Option<&'a str>,
+}
 
 /// How many times to re-ask for a mistyped password, as sshd itself allows.
 const PASSWORD_ATTEMPTS: usize = 3;

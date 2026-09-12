@@ -267,8 +267,10 @@ pub(super) fn check_known_hosts(
         CheckResult::Mismatch => Err(ConnectErr::Other(format!(
             "host key mismatch for '{hostname}' (possible MITM); fix ~/.ssh/known_hosts"
         ))),
+        // No advice on what to do about it: that depends on the command, and
+        // each caller that can do something adds its own.
         CheckResult::NotFound => Err(ConnectErr::UnknownHostKey(format!(
-            "server '{hostname}' not found in known_hosts; connect once with ssh to accept its key"
+            "server '{hostname}' not found in known_hosts"
         ))),
         // Not a first contact: libssh2 could not perform the comparison at
         // all, and offering to record a key would paper over that.

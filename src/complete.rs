@@ -20,7 +20,8 @@ use crate::ssh::known_hosts::{glob_match, known_hosts_files, parse_line, plain_n
 /// ride out a single commit, short enough that the shell never feels stuck.
 const BUSY_TIMEOUT: Duration = Duration::from_millis(250);
 
-/// Targets for upgrade/reboot/restartservices: the literal 'all', then hosts.
+/// Targets for update/upgrade/reboot/restartservices: the literal 'all', then
+/// hosts.
 pub fn targets() -> Vec<CompletionCandidate> {
     // The engine sorts on display order with None first, so 'all' leads only
     // if every hostname is pushed explicitly behind it.

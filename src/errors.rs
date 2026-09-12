@@ -8,13 +8,13 @@ pub enum DarnError {
     #[error("{0}")]
     Ssh(String),
     /// An SSH connection that got as far as authentication and was refused.
-    /// Separate from `Ssh` only so `server add` can offer to install a key;
-    /// it prints and exits the same way.
+    /// Separate from `Ssh` only so `server add` (and `settle_access`) can
+    /// offer to install a key; it prints and exits the same way.
     #[error("{0}")]
     SshAuth(String),
     /// An SSH connection to a host whose key is in no known_hosts file.
-    /// Separate from `Ssh` only so `server add` can offer to record it; it
-    /// prints and exits the same way. A *mismatched* key is not this — that
+    /// Separate from `Ssh` only so `server add` (and `settle_access`) can
+    /// offer to record it; it prints and exits the same way. A *mismatched* key is not this — that
     /// stays `Ssh`, and fatal.
     #[error("{0}")]
     SshHostKeyUnknown(String),

@@ -134,8 +134,10 @@ modifying it, and stays silent if there is no database yet.
   standard input.
 - `darn server reset [-y]` — clear the server list. Asks first unless `-y` is
   given.
-- `darn update [-j N]` — probe every host (including `--no-all` ones) and
-  record pending patches, reboot state, and stale services.
+- `darn update [TARGET] [-j N]` — probe every host (including `--no-all` ones)
+  and record pending patches, reboot state, and stale services. Name a single
+  host as TARGET to probe only that one; at a terminal it is first offered the
+  same host-key and key-install questions as `darn shell` (see below).
 - `darn upgrade TARGET [--security|--non-security] [-j N] [--include-no-all]`
   — apply patches to a hostname or the literal `all`. `all` selects only the
   hosts the last discovery found patches on (narrowed by `--security` /
@@ -157,7 +159,9 @@ modifying it, and stays silent if there is no database yet.
 - `darn shell HOSTNAME` — drop into an interactive session on a managed host,
   using the stored user, port and key. This one hands the terminal to `ssh(1)`,
   so ssh must be on PATH and your `~/.ssh/config` applies; the session is not
-  recorded.
+  recorded. Before it does, darn checks it can connect itself and asks the
+  same host-key and key-install questions `server add` does (see below) —
+  which is what a host brought in with `server import` needs on first contact.
 - `darn status [--plain] [--all]` — offline view of pending work; `--plain`
   is stable, script-friendly text.
 - `darn completions SHELL` — print the shell completion script (see above).
@@ -171,11 +175,13 @@ Authentication tries the explicit `--key` file, then the SSH agent, then
 `~/.ssh/id_*`. Unknown or mismatched host keys are rejected. Privilege
 escalation uses passwordless `sudo -n` (skipped when the SSH user is `root`).
 
-`darn server add` is the one command that will ask you about any of this, so
-that adding a host you have never touched takes one command rather than a
-detour through `ssh`, `ssh-copy-id` and `visudo`. Every question is asked only
-when stdin is a terminal — `cron` runs fail or skip as before rather than hang
-— and Ctrl+C cancels.
+`darn server add` is the command that will ask you about all of this, so that
+adding a host you have never touched takes one command rather than a detour
+through `ssh`, `ssh-copy-id` and `visudo`. `darn shell` and `darn update
+HOSTNAME` ask the first two questions as well, for hosts that were imported
+rather than added. Every
+question is asked only when stdin is a terminal — `cron` runs fail or skip as
+before rather than hang — and Ctrl+C cancels.
 
 - **An unknown host key** is shown with its `SHA256` fingerprint, in ssh(1)'s
   own wording, and recorded in `~/.ssh/known_hosts` if you type `yes` (or paste
@@ -188,7 +194,11 @@ when stdin is a terminal — `cron` runs fail or skip as before rather than hang
   append your public key (`--key`'s `.pub` sibling, else the first of
   `~/.ssh/id_*.pub`) to `~/.ssh/authorized_keys` there. Every later connection
   uses the key. Hosts without a POSIX shell, such as RouterOS, need their keys
-  installed with their own tools.
+  installed with their own tools. In `darn shell` and `darn update HOSTNAME`,
+  an empty password skips this and the command carries on: `update` then
+  fails to connect as it would have, while `shell` hands over to ssh, which
+  may still get in with something darn does not use — a key named in
+  `~/.ssh/config`, say, or one with a passphrase that is not in the agent.
 - **No passwordless sudo** — the account connects fine but `sudo -n` fails —
   offers to create a `darn` user on the host that has it. Say yes and darn
   asks for the account's password (reusing the one you just typed, if you
@@ -204,7 +214,8 @@ when stdin is a terminal — `cron` runs fail or skip as before rather than hang
   missing. Not offered for RouterOS, which has no sudo.
 
 Every other command still rejects a host that is not already in `known_hosts`;
-`darn server add` is where a host is vouched for.
+`darn server add` (or, for an imported host, `darn shell` or `darn update
+HOSTNAME`) is where a host is vouched for.
 
 ## Database
 

@@ -7,6 +7,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use rusqlite::Connection;
 
 use crate::db::{self, Server};
+use crate::errors::DarnError;
 use crate::ssh::{Recorder, SshSession, DEFAULT_CONNECT_TIMEOUT};
 
 #[derive(Clone, Debug)]
@@ -134,7 +135,22 @@ where
     );
     match connected {
         Ok(mut session) => work(server, &mut session, &work_conn),
-        Err(e) => fail(e.to_string()),
+        Err(e) => fail(connect_failure(e, &server.hostname)),
+    }
+}
+
+/// A connect failure's message, with the way out added where darn has one:
+/// `darn update HOST` at a terminal asks about an unknown host key and offers
+/// to install a key where none works, and every batch command can then get in.
+fn connect_failure(e: DarnError, hostname: &str) -> String {
+    match e {
+        DarnError::SshHostKeyUnknown(msg) => {
+            format!("{msg}; run `darn update {hostname}` from a terminal to accept its key")
+        }
+        DarnError::SshAuth(msg) => {
+            format!("{msg}; run `darn update {hostname}` from a terminal to install your key")
+        }
+        e => e.to_string(),
     }
 }
 
@@ -159,6 +175,34 @@ mod tests {
             reboot_detail: None,
             no_all: false,
         }
+    }
+
+    #[test]
+    fn host_key_and_auth_failures_point_at_a_single_host_update() {
+        let unknown = DarnError::SshHostKeyUnknown(
+            "failed to connect to web-01: server 'web-01' not found in known_hosts".to_string(),
+        );
+        assert_eq!(
+            connect_failure(unknown, "web-01"),
+            "failed to connect to web-01: server 'web-01' not found in known_hosts; \
+             run `darn update web-01` from a terminal to accept its key"
+        );
+        let refused =
+            DarnError::SshAuth("failed to connect to web-01: authentication failed".to_string());
+        assert_eq!(
+            connect_failure(refused, "web-01"),
+            "failed to connect to web-01: authentication failed; \
+             run `darn update web-01` from a terminal to install your key"
+        );
+    }
+
+    #[test]
+    fn other_connect_failures_are_passed_through_unadorned() {
+        let mismatch = DarnError::Ssh("host key mismatch for 'web-01' (possible MITM)".to_string());
+        assert_eq!(
+            connect_failure(mismatch, "web-01"),
+            "host key mismatch for 'web-01' (possible MITM)"
+        );
     }
 
     #[test]

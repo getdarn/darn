@@ -1,6 +1,7 @@
 use std::path::Path;
 
-use crate::commands::batch::{batch_exit_code, host_result, record_restart_state};
+use crate::commands::batch::{batch_exit_code, host_result, record_restart_state, require_server};
+use crate::commands::server::settle_access;
 use crate::commands::session_id;
 use crate::db::{self, Server};
 use crate::errors::DarnError;
@@ -9,14 +10,29 @@ use crate::orchestrator::{run_parallel, HostResult};
 use crate::render::{green, red, render_results, restart_suffix, yellow};
 use crate::ssh::SshSession;
 
-pub fn run(db_path: Option<&Path>, jobs: usize) -> Result<i32, DarnError> {
+/// Probe hosts for pending work: every host for no target or 'all', else the
+/// one named.
+pub fn run(db_path: Option<&Path>, target: Option<&str>, jobs: usize) -> Result<i32, DarnError> {
     let conn = db::open_db(db_path)?;
-    let servers = db::list_servers(&conn)?;
-    if servers.is_empty() {
-        println!("{}", yellow("No servers configured."));
-        return Ok(0);
-    }
     let session_id = session_id();
+    let (servers, title) = match target {
+        None | Some("all") => {
+            let servers = db::list_servers(&conn)?;
+            if servers.is_empty() {
+                println!("{}", yellow("No servers configured."));
+                return Ok(0);
+            }
+            (servers, "update results".to_string())
+        }
+        // A host named on its own may be an imported one meeting darn for the
+        // first time, so it is offered what `server add` would have settled.
+        // Before the progress bar starts, so the two never draw over each other.
+        Some(hostname) => {
+            let server = require_server(&conn, hostname)?;
+            settle_access(&conn, &server, &session_id)?;
+            (vec![server], format!("update {hostname}"))
+        }
+    };
 
     let work = |server: &Server,
                 session: &mut SshSession<'_>,
@@ -58,6 +74,6 @@ pub fn run(db_path: Option<&Path>, jobs: usize) -> Result<i32, DarnError> {
         db_path,
         Some("Discovering patches"),
     );
-    render_results("update results", &results);
+    render_results(&title, &results);
     Ok(batch_exit_code(&results))
 }
