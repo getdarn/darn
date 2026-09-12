@@ -1,6 +1,6 @@
 [package]
 name = "darn"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 # 1.88 is the floor: comfy-table uses let-chains and declares no rust-version
 # of its own, so this has to be verified by building rather than read off the
