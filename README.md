@@ -63,9 +63,9 @@ darn server add admin@web-01          # Prompts to install keys + passwordless s
 darn server add '[2001:db8::1]:2222'  # bracketed IPv6 with a port, current user
 darn update                           # discover pending patches (parallel)
 darn status                           # what the last discovery found
-darn upgrade all                      # apply patches everywhere
-darn reboot all                       # reboot the hosts flagged as needing it
-darn restartservices all              # bounce services running stale libraries
+darn upgrade all                      # apply patches (parallel)
+darn reboot all                       # reboot the hosts where required (parallel)
+darn restartservices all              # bounce services running stale libraries (parallel)
 darn log web-01                       # full output of the last session
 darn shell web-01                     # interactive SSH session on a managed host
 ```
