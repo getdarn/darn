@@ -60,7 +60,7 @@ for setting up a build environment, building, and running the tests.
 
 ```sh
 darn server add admin@web-01          # auto-detects the host type, installs keys and passwordless sudo if needed
-darn server add '[2001:db8::1]:2222'  # bracketed IPv6 with a port
+darn server add '[2001:db8::1]:2222'  # bracketed IPv6 with a port, current user
 darn update                           # discover pending patches (parallel)
 darn status                           # what the last discovery found
 darn upgrade all                      # apply patches everywhere
