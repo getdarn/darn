@@ -308,7 +308,7 @@ graph LR
    unless it is a prerelease. The image is assembled from the musl binary, with
    no compile step.
 7. **publish-repos** pushes the packages to the Cloudsmith repository
-   `getdarn/darn`, as `any-distro/any-version`. Prereleases skip this job.
+   `getdarn/darntest`, as `any-distro/any-version`. Prereleases skip this job.
 
 ### Secrets and settings
 
@@ -323,7 +323,7 @@ graph LR
 
   ```sh
   docker logout ghcr.io && docker pull ghcr.io/getdarn/darn:latest
-  curl -fsSI https://dl.cloudsmith.io/public/getdarn/darn/setup.deb.sh
+  curl -fsSI https://dl.cloudsmith.io/public/getdarn/darntest/setup.deb.sh
   ```
 
   As of v0.3.0 both were still private. To fix it, change the visibility in
