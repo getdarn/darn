@@ -2,27 +2,26 @@
 
 SSH-based bulk patching CLI.
 
-darn provides easy, fast centralised patching for up to a few tens of 
-hosts,  for people who would otherwise do it manually. Installation,
-registration of a few hosts and a first patching run should take less 
-than five minutes. It works in parallel across all of your hosts, so
-makes ongoing patching much faster.
+darn provides easy, fast centralised patching designed for up to a few tens of
+hosts, for people who would otherwise do it manually. Installation,
+registration of a few hosts and a first patching run should take less than five
+minutes. It works in parallel across all of your hosts, so makes ongoing
+patching much faster.
 
-Debian/Ubuntu, RedHat family and (with limited functionality) Mikrotik 
-hosts are currently supported.
+Debian/Ubuntu, RedHat family and (with limited functionality) Mikrotik hosts are
+currently supported.
 
-It is command line based and builds on SSH for authentication and remote
-host access, enabling rapid setup. Command line completion makes it quick
-to use. As well as parallel patching, changes can be applied individually
-for fine grained control. It also looks after service restarts and host 
-reboots (tracking which are complete) in a similar way. 
+It is command line based and builds on SSH for authentication and remote host
+access, enabling rapid setup. Command line completion makes it quick to use. As
+well as parallel patching, changes can be applied individually for fine grained
+control. It also looks after service restarts and host reboots (tracking which
+are complete) in a similar way. 
 
-It can be run directly on your laptop, any management server or from a 
-locked down host. The latter is particularly recommended as the user it 
-runs under must have SSH public keys authorised for passwordless sudo on 
-all managed hosts. While this sounds scary, the alternative for most
-users is ssh'ing from the same machine they use to browse the web, which 
-is the same or worse. 
+It can be run directly on your laptop, any management server or from a locked
+down host. The latter is particularly recommended as the user it runs under must
+have SSH public keys authorised for passwordless sudo on all managed hosts.
+While this sounds scary, the alternative for most users is ssh'ing from the same
+machine they use to browse the web, which is the same or worse. 
 
 ## Installing
 
@@ -62,7 +61,7 @@ for setting up a build environment, building, and running the tests.
 darn server add admin@web-01          # Prompts to install keys + passwordless sudo if needed
 darn server add '[2001:db8::1]:2222'  # bracketed IPv6 with a port, current user
 darn update                           # discover pending patches (parallel)
-darn status                           # what the last discovery found
+darn status                           # pending actions
 darn upgrade all                      # apply patches (parallel)
 darn reboot all                       # reboot the hosts where required (parallel)
 darn restartservices all              # bounce services running stale libraries (parallel)
@@ -72,10 +71,7 @@ darn shell web-01                     # interactive SSH session on a managed hos
 
 ## Shell completion
 
-Completion covers subcommands and flags, and completes hostnames from your own
-database — so `darn upgrade <TAB>` offers `all` plus the hosts you manage, and
-`darn server add <TAB>` also offers the hosts in `~/.ssh/config` and
-`~/.ssh/known_hosts`. Add one line to your shell's startup file:
+Completion covers subcommands and flags, and completes registered hostnames.
 
 ```sh
 # ~/.bashrc
@@ -137,7 +133,7 @@ errors.
 Darn stores state in a SQLite database The database lives at 
 `$XDG_DATA_HOME/darn/darn.db` (default`~/.local/share/darn/darn.db`).
 
-## Server export files
+## Server export/import
 
 `darn server export` and `darn server import` move the server list in and out
 of a YAML file, so it can be backed up, reviewed in a diff, kept in version
@@ -160,7 +156,7 @@ The following allows allows darn to be run from a new machine:
 ```sh
 darn server export hosts.yaml            # on the existing machine
 darn server import --replace hosts.yaml  # on the new machine
-darn update
+darn update                              # on the new machine
 ```
 
 If known_hosts doesn't contain the relevant hosts or authorized_keys on each
