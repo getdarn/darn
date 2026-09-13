@@ -1,15 +1,28 @@
 # darn
 
-SSH-based fleet patching CLI.
+SSH-based bulk patching CLI.
 
-darn keeps a list of hosts in a local SQLite database, connects to them in
-parallel over SSH with your own credentials, discovers pending package
-updates, applies them, reboots hosts that need it, and restarts services left
-running against upgraded libraries. Every remote command's stdout, stderr and
-exit code is logged to the database.
+darn provides easy, fast centralised patching for up to a few tens of 
+hosts,  for people who would otherwise do it manually. Installation,
+registration of a few hosts and a first patching run should take less 
+than five minutes. It works in parallel across all of your hosts, so
+makes ongoing patching much faster.
 
-Supported host types: Debian/Ubuntu (`apt`), RedHat-family (`dnf`/`yum`), and
-Mikrotik RouterOS.
+Debian/Ubuntu, RedHat family and (with limited functionality) Mikrotik 
+hosts are currently supported.
+
+It is command line based and builds on SSH for authentication and remote
+host access, enabling rapid setup. Command line completion makes it quick
+to use. As well as parallel patching, changes can be applied individually
+for fine grained control. It also looks after service restarts and host 
+reboots (tracking which are complete) in a similar way. 
+
+It can be run directly on your laptop, any management server or from a 
+locked down host. The latter is particularly recommended as the user it 
+runs under must have SSH public keys authorised for passwordless sudo on 
+all managed hosts. While this sounds scary, the alternative for most
+users is ssh'ing from the same machine they use to browse the web, which 
+is the same or worse. 
 
 ## Installing
 
@@ -42,26 +55,6 @@ sudo install -m755 darn-0.3.0-x86_64-linux-musl/darn /usr/local/bin/darn
 
 Every release also ships `SHA256SUMS` and build provenance attestations, so a
 download can be verified with `sha256sum -c` and `gh attestation verify`.
-
-### Docker
-
-```sh
-docker run --rm -it \
-  -v ~/.ssh:/home/darn/.ssh:ro \
-  -v ~/.local/share/darn:/home/darn/.local/share/darn \
-  -v "$SSH_AUTH_SOCK:/ssh-agent" -e SSH_AUTH_SOCK=/ssh-agent \
-  -e USER="$USER" \
-  ghcr.io/getdarn/darn:latest status
-```
-
-Three of those flags are load-bearing. `-t` keeps the progress bars working.
-`USER` is what darn uses as the SSH username for targets added without an
-explicit `user@`, and it defaults to `root` when unset. Mounting the data
-directory is what makes the database survive the container.
-
-The image is Alpine-based and includes `ssh`, so you can accept a new host key
-from inside it, and `bash`, so `docker exec -it <container> bash` gets working
-tab-completion.
 
 ### Building from source
 
@@ -100,25 +93,14 @@ source <(COMPLETE=zsh darn)
 COMPLETE=fish darn | source
 ```
 
-`darn completions SHELL` prints the same script if you would rather install it
-as a file (`bash`, `elvish`, `fish`, `powershell`, `zsh`):
-
-```sh
-darn completions bash > /etc/bash_completion.d/darn
-darn completions fish > ~/.config/fish/completions/darn.fish
-```
-
-The script calls darn itself to work out the candidates, so regenerate a saved
-copy after upgrading darn. Completion reads the database without creating or
-modifying it, and stays silent if there is no database yet.
-
 ## Commands
 
 - `darn server add [USER@]HOSTNAME[:PORT] [--port N] [--key PATH] [--no-all|--all]`
-  — add or refresh a host. `--no-all` holds it back from `all` targets;
-  re-adding without either flag keeps the current setting. Offers to record an
-  unknown host key, and to install your public key where none works
-  (see [SSH behaviour](#ssh-behaviour)).
+  — add or refresh a host. `--no-all` holds it back from `all` targets.
+  Prompts to add to known hosts if required and (with a password) to install 
+  your public key on the host to allow passwordless ssh. If the remote user 
+  does not have passwordless sudo, it will also offer to create a separate 
+  'darn' user which does.
 - `darn server remove|set|list`
 - `darn server export FILE` — write the server list to FILE as YAML, or to
   standard output for `-`. See [the server file](#the-server-file).
@@ -129,105 +111,38 @@ modifying it, and stays silent if there is no database yet.
   standard input.
 - `darn server reset [-y]` — clear the server list. Asks first unless `-y` is
   given.
-- `darn update [TARGET] [-j N]` — probe every host (including `--no-all` ones)
-  and record pending patches, reboot state, and stale services. Name a single
-  host as TARGET to probe only that one; at a terminal it is first offered the
-  same host-key and key-install questions as `darn shell` (see below).
+- `darn update [TARGET] [-j N]` — probe a single host or all in parallel
+  and record pending patches, reboot state, and stale services.
 - `darn upgrade TARGET [--security|--non-security] [-j N] [--include-no-all]`
-  — apply patches to a hostname or the literal `all`. `all` selects only the
-  hosts the last discovery found patches on (narrowed by `--security` /
-  `--non-security`), the way `reboot all` and `restartservices all` select
-  theirs; naming a host directly upgrades it regardless. Naming a single host
-  streams that host's output to your terminal as it happens, as if you had run
-  the package manager there yourself; `all` shows a progress bar instead,
-  because concurrent hosts interleaving would be unreadable. Either way the
-  summary table is printed at the end and the full output is recorded, to be
-  read back with `darn log`.
+  — apply outstanding patches to an individual host or the literal `all` 
+  (excluding hosts flagged as no-all, which must be patched individually).
+  For a single host, output is streamed as if the package manager has been 
+  run directly. `all` applies outstanding patches in parallel. All patch 
+  output is available with `darn log`.
 - `darn reboot TARGET [-y] [--force] [--no-wait] [--timeout SECONDS] [-j N] [--include-no-all]`
   — reboot hosts flagged as needing it; waits for each host to come back
-  (verified by a changed boot id) unless `--no-wait`.
+  unless `--no-wait`.
 - `darn restartservices TARGET [-y] [--force] [-j N] [--include-no-all]`
   — restart stale services. On Debian this is delegated to needrestart so the
-  host's own restart policy is honoured; declined units are marked deferred,
-  and `--force` bypasses the policy.
+  host's own restart policy is honoured; declined units are marked deferred.
+  `--force` bypasses the policy.
 - `darn log HOSTNAME` — the recorded commands from the most recent session.
 - `darn shell HOSTNAME` — drop into an interactive session on a managed host,
-  using the stored user, port and key. This one hands the terminal to `ssh(1)`,
-  so ssh must be on PATH and your `~/.ssh/config` applies; the session is not
-  recorded. Before it does, darn checks it can connect itself and asks the
-  same host-key and key-install questions `server add` does (see below) —
-  which is what a host brought in with `server import` needs on first contact.
-- `darn status [--plain] [--all]` — offline view of pending work; `--plain`
-  is stable, script-friendly text.
+  using the stored user, port and key. Unlike other commands, requires 'ssh' 
+  to be on the path.
+- `darn status [--plain] [--all]` — displays pending patches, service restarts
+  and reboots required.
 - `darn completions SHELL` — print the shell completion script (see above).
 
 Exit codes: 0 on success, 1 when a command or any host failed, 2 on usage
 errors.
 
-## SSH behaviour
-
-Authentication tries the explicit `--key` file, then the SSH agent, then
-`~/.ssh/id_*`. Unknown or mismatched host keys are rejected. Privilege
-escalation uses passwordless `sudo -n` (skipped when the SSH user is `root`).
-
-`darn server add` is the command that will ask you about all of this, so that
-adding a host you have never touched takes one command rather than a detour
-through `ssh`, `ssh-copy-id` and `visudo`. `darn shell` and `darn update
-HOSTNAME` ask the first two questions as well, for hosts that were imported
-rather than added. Every question is asked only when stdin is a terminal —
-`cron` runs fail or skip as before rather than hang — and Ctrl+C cancels.
-
-- **An unknown host key** is shown with its `SHA256` fingerprint, in ssh(1)'s
-  own wording, and recorded in `~/.ssh/known_hosts` if you type `yes` (or paste
-  the fingerprint back). Entries are written hashed, as OpenSSH writes them
-  here, and the file is created 600 in a 700 `~/.ssh` if it does not exist. A
-  *mismatched* key is never offered this way: that is a changed key, not a new
-  one, and stays a hard error everywhere.
-- **No usable key** prompts for the password of the **remote** account — the
-  one on the host being added, not your local login — and uses it once to
-  append your public key (`--key`'s `.pub` sibling, else the first of
-  `~/.ssh/id_*.pub`) to `~/.ssh/authorized_keys` there. Every later connection
-  uses the key. Hosts without a POSIX shell, such as RouterOS, need their keys
-  installed with their own tools. In `darn shell` and `darn update HOSTNAME`,
-  an empty password skips this and the command carries on: `update` then
-  fails to connect as it would have, while `shell` hands over to ssh, which
-  may still get in with something darn does not use — a key named in
-  `~/.ssh/config`, say, or one with a passphrase that is not in the agent.
-  Both commands know a stored RouterOS host, and rather than asking for a
-  password they print the `scp` and `/user ssh-keys import` steps that
-  install the key by hand.
-- **No passwordless sudo** — the account connects fine but `sudo -n` fails —
-  offers to create a `darn` user on the host that has it. Say yes and darn
-  asks for the account's password (reusing the one you just typed, if you
-  did), then runs one `sudo` command that creates `darn`, writes
-  `darn ALL=(ALL) NOPASSWD: ALL` and installs your public key for it. The rule
-  goes to `/etc/sudoers.d/darn` where drop-ins are enabled and into
-  `/etc/sudoers` otherwise; either way the candidate file is checked with
-  `visudo -c -f` before it replaces the live one. darn then reconnects as
-  `darn`, checks `sudo -n` really works, and stores the host under that user.
-  Decline, and the host is added under the account you named — with the
-  warning that anything needing root will fail. Re-adding a provisioned host
-  changes nothing: the user, the rule and the key are each only written if
-  missing. Not offered for RouterOS, which has no sudo.
-
-Every other command still rejects a host that is not already in `known_hosts`;
-`darn server add` (or, for an imported host, `darn shell` or `darn update
-HOSTNAME`) is where a host is vouched for.
-
 ## Database
 
-The database lives at `$XDG_DATA_HOME/darn/darn.db` (default
-`~/.local/share/darn/darn.db`). The schema is identical to darn3's, including
-its migrations, so an existing darn3 database works as-is:
+Darn stores state in a SQLite database The database lives at 
+`$XDG_DATA_HOME/darn/darn.db` (default`~/.local/share/darn/darn.db`).
 
-```sh
-darn --db ~/.local/share/darn3/darn3.db status
-```
-
-darn does not migrate the default darn3 path automatically; copy the file or
-pass `--db` if you want to keep using it.
-
-## The server file
+## Server export files
 
 `darn server export` and `darn server import` move the server list in and out
 of a YAML file, so it can be backed up, reviewed in a diff, kept in version
@@ -245,28 +160,17 @@ servers:
   no_all: false
 ```
 
-The file holds configuration only — what you told darn about a host. Pending
-patches, reboot verdicts and the command log stay in the database, because they
-are discovered state rather than something you decided. Nothing secret is in
-there either: a private key's path, never its contents.
-
-Only `hostname` and `host_type` are required, so a file can be written by hand.
-`ssh_user` defaults to the current local user, `ssh_port` to 22, and `no_all` to
-false — the same defaults `darn server add` uses. `host_type` must be one darn
-supports (`debian`, `redhat` or `mikrotik`). Hosts are written in hostname
-order, so re-exporting an unchanged fleet gives a byte-identical file.
-
-Importing is entirely offline: it never connects to the hosts, and believes
-what the file says about them. Run `darn update` afterwards to find out what
-they actually need. A file that does not parse, names an unknown host type, or
-lists a host twice is refused as a whole and changes nothing.
-
-To replace one machine's list with another's exactly:
+The following allows allows darn to be run from a new machine:
 
 ```sh
-darn server export fleet.yaml            # on the machine that has the list
-darn server import --replace fleet.yaml  # on the machine that wants it
+darn server export hosts.yaml            # on the existing machine
+darn server import --replace hosts.yaml  # on the new machine
+darn update
 ```
+
+If known_hosts doesn't contain the relevant hosts or authorized_keys on each
+host doesn't include the new users keys, darn will report errors. These can
+be fixed by running "darn update" for each host individually.
 
 ## License
 
