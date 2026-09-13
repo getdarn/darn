@@ -65,13 +65,8 @@ tab-completion.
 
 ### Building from source
 
-```sh
-cargo build --release
-# binary at target/release/darn
-```
-
-The build vendors libssh2, OpenSSL and SQLite, so no development headers are
-needed.
+See the [developer guide](https://github.com/getdarn/darn/blob/main/docs/Developers.md)
+for setting up a build environment, building, and running the tests.
 
 ## Quick start
 
@@ -179,9 +174,8 @@ escalation uses passwordless `sudo -n` (skipped when the SSH user is `root`).
 adding a host you have never touched takes one command rather than a detour
 through `ssh`, `ssh-copy-id` and `visudo`. `darn shell` and `darn update
 HOSTNAME` ask the first two questions as well, for hosts that were imported
-rather than added. Every
-question is asked only when stdin is a terminal — `cron` runs fail or skip as
-before rather than hang — and Ctrl+C cancels.
+rather than added. Every question is asked only when stdin is a terminal —
+`cron` runs fail or skip as before rather than hang — and Ctrl+C cancels.
 
 - **An unknown host key** is shown with its `SHA256` fingerprint, in ssh(1)'s
   own wording, and recorded in `~/.ssh/known_hosts` if you type `yes` (or paste
@@ -273,17 +267,6 @@ To replace one machine's list with another's exactly:
 darn server export fleet.yaml            # on the machine that has the list
 darn server import --replace fleet.yaml  # on the machine that wants it
 ```
-
-## Development
-
-```sh
-cargo test     # DB, parser, target-parsing and orchestrator tests
-cargo clippy
-```
-
-The parsers (apt simulate output, needrestart, dnf check-update /
-updateinfo, RouterOS) and the restart-verdict precedence ladders are pure
-functions with the darn3 test suite ported alongside them.
 
 ## License
 
