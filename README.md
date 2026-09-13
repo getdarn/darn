@@ -26,22 +26,19 @@ is the same or worse.
 
 ## Installing
 
-### Debian, Ubuntu and derivatives
+### Debian (11+), Ubuntu (Ubuntu 20.04+) and derivatives
 
 ```sh
 curl -1sLf https://dl.cloudsmith.io/public/getdarn/darn/setup.deb.sh | sudo -E bash
 sudo apt install darn
 ```
 
-### RHEL, Alma, Rocky, Fedora
+### RHEL, Alma, Rocky, Fedora (8+)
 
 ```sh
 curl -1sLf https://dl.cloudsmith.io/public/getdarn/darn/setup.rpm.sh | sudo -E bash
 sudo dnf install darn
 ```
-
-Packages are built against glibc 2.28, so they work on RHEL-family 8 and
-later, Debian 11 and later, and Ubuntu 20.04 and later.
 
 ### Static tarball
 
