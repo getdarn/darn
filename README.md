@@ -42,8 +42,6 @@ sudo dnf install darn
 
 ### Static tarball
 
-Needs no glibc at all — useful for older or unusual distributions.
-
 ```sh
 curl -LO https://github.com/getdarn/darn/releases/latest/download/darn-0.3.0-x86_64-linux-musl.tar.gz
 tar xzf darn-0.3.0-x86_64-linux-musl.tar.gz
