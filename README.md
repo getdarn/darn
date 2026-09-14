@@ -28,14 +28,14 @@ machine they use to browse the web, which is the same or worse.
 ### Debian (11+), Ubuntu (Ubuntu 20.04+) and derivatives
 
 ```sh
-curl -1sLf https://dl.cloudsmith.io/public/getdarn/darntest/setup.deb.sh | sudo -E bash
+curl -1sLf https://dl.cloudsmith.io/public/getdarn/darn/setup.deb.sh | sudo -E bash
 sudo apt install darn
 ```
 
 ### RHEL, Alma, Rocky, Fedora (8+)
 
 ```sh
-curl -1sLf https://dl.cloudsmith.io/public/getdarn/darntest/setup.rpm.sh | sudo -E bash
+curl -1sLf https://dl.cloudsmith.io/public/getdarn/darn/setup.rpm.sh | sudo -E bash
 sudo dnf install darn
 ```
 

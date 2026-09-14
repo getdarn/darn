@@ -257,8 +257,8 @@ jobs:
           # consumer, which works because the glibc floor is 2.28 and the only
           # other dependency is zlib.
           for f in $(find artifacts -name '*.deb'); do
-            cloudsmith push deb getdarn/darntest/any-distro/any-version "$f"
+            cloudsmith push deb getdarn/darn/any-distro/any-version "$f"
           done
           for f in $(find artifacts -name '*.rpm'); do
-            cloudsmith push rpm getdarn/darntest/any-distro/any-version "$f"
+            cloudsmith push rpm getdarn/darn/any-distro/any-version "$f"
           done
