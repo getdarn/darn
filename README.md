@@ -25,6 +25,25 @@ machine they use to browse the web, which is the same or worse.
 
 ## Installing
 
+### Quick install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/getdarn/darn/main/install.sh | sudo bash
+```
+
+or, with wget:
+
+```sh
+wget -qO- https://raw.githubusercontent.com/getdarn/darn/main/install.sh | sudo bash
+```
+
+On Debian, Ubuntu and the RHEL family this sets up the apt or dnf repository
+below and installs the package from it, so darn is updated along with the rest
+of the system. On any other x86_64 Linux it installs the static binary into
+`/usr/local`, after checking it against the release's `SHA256SUMS`. To get the
+static binary on Debian or the RHEL family as well, end the command with
+`sudo bash -s -- --tarball` instead.
+
 ### Debian (11+), Ubuntu (Ubuntu 20.04+) and derivatives
 
 ```sh

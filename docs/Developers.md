@@ -316,6 +316,27 @@ graph LR
   curl -fsSI https://dl.cloudsmith.io/public/getdarn/darn/setup.deb.sh
   ```
 
+### The install script
+
+The README's quick install pipes `install.sh` from `main` on
+raw.githubusercontent.com into bash. That makes it the only part of
+distribution that is not tied to a release: a change to it goes live as soon
+as it is pushed to `main`. It fetches the newest release at run time, though,
+so it never needs updating for a new version.
+
+It uses Cloudsmith's own setup scripts for apt and dnf/yum, and falls back to
+the release tarball anywhere else. Cloudsmith's rpm config points `sslcacert`
+at `/etc/pki/tls/certs/ca-bundle.crt`, which Fedora 44 no longer ships, so the
+script deletes that line when the file is missing. Test changes in clean
+containers, piping the script in as the one-liner does:
+
+```sh
+docker run --rm -v "$PWD/install.sh:/i.sh:ro" fedora:latest sh -c 'bash -s < /i.sh'
+```
+
+Cover at least one apt image with no curl, a dnf image, and `--tarball` or a
+distribution with neither, such as `alpine` after `apk add bash`.
+
 ## Cutting a release
 
 Releases are cut with [cargo-release](https://github.com/crate-ci/cargo-release),
