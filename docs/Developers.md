@@ -75,7 +75,7 @@ environment for exactly that reason; see
 
 ### Static musl binary
 
-The release tarball and the container image use a fully static binary:
+The release tarball uses a fully static binary:
 
 ```sh
 rustup target add x86_64-unknown-linux-musl
@@ -130,9 +130,6 @@ The container runs as root, so everything it writes into `target/` and `dist/`
 is owned by root on the host. Afterwards, run `sudo chown -R "$USER" target
 dist`, or build from a copy of the tree (`git archive HEAD | tar -x -C
 /some/dir`).
-
-The container image is assembled from a prebuilt musl binary. The comment at the
-top of the `Dockerfile` gives the local build steps.
 
 ## Running the tests
 
@@ -289,7 +286,6 @@ graph LR
   verify --> build-native & build-musl
   build-native & build-musl --> tarballs
   tarballs --> release
-  build-native & build-musl --> publish-image
   release --> publish-repos
 ```
 
@@ -304,31 +300,21 @@ graph LR
 5. **release** writes `SHA256SUMS`, creates a build provenance attestation for
    each package and tarball, and publishes a GitHub Release with generated
    notes.
-6. **publish-image** pushes `ghcr.io/getdarn/darn:<version>`, and also `:latest`
-   unless it is a prerelease. The image is assembled from the musl binary, with
-   no compile step.
-7. **publish-repos** pushes the packages to the Cloudsmith repository
+6. **publish-repos** pushes the packages to the Cloudsmith repository
    `getdarn/darn`, as `any-distro/any-version`. Prereleases skip this job.
 
 ### Secrets and settings
 
 - **`CLOUDSMITH_API_KEY`**: a repository secret, used by publish-repos.
 - **`GITHUB_TOKEN`** is provided automatically. It creates the release and the
-  attestations, and pushes the image to GHCR. Each job declares only the
-  permissions it needs.
-- **Visibility.** The GHCR package and the Cloudsmith repository must be public
-  for the README's Docker, apt and dnf install instructions to work for anyone
-  else. The workflow authenticates to both, so a green run does not prove
-  this. Check it logged out:
+  attestations. Each job declares only the permissions it needs.
+- **Visibility.** The Cloudsmith repository must be public for the README's
+  apt and dnf install instructions to work for anyone else. The workflow
+  authenticates to it, so a green run does not prove this. Check it logged out:
 
   ```sh
-  docker logout ghcr.io && docker pull ghcr.io/getdarn/darn:latest
   curl -fsSI https://dl.cloudsmith.io/public/getdarn/darn/setup.deb.sh
   ```
-
-  As of v0.3.0 both were still private. To fix it, change the visibility in
-  the GHCR package's settings on GitHub, and in the Cloudsmith repository's
-  settings.
 
 ## Cutting a release
 
@@ -382,8 +368,8 @@ terminal.
 
 ### Prereleases
 
-`cargo release 0.4.0-rc.1 --execute` publishes a GitHub prerelease. It pushes
-the image under its version tag only, not `:latest`, and skips Cloudsmith.
+`cargo release 0.4.0-rc.1 --execute` publishes a GitHub prerelease and skips
+Cloudsmith.
 
 Beware of the README, though. The `pre-release-replacements` patterns match
 only `X.Y.Z`. A prerelease writes `darn-0.4.0-rc.1-x86_64-linux-musl.tar.gz`

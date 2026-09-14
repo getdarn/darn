@@ -11,12 +11,11 @@ tag-name = "v{{version}}"
 sign-tag = true
 # Not published to crates.io: the `darn` name is taken by an unrelated
 # crate (shahinrostami/darn, held since 2020). Distribution is via the
-# GitHub Release, the Cloudsmith apt/yum repos and the GHCR image.
+# GitHub Release and the Cloudsmith apt/yum repos.
 publish = false
 push = true
 
 pre-release-replacements = [
   { file = "README.md", search = "darn/[0-9]+\\.[0-9]+\\.[0-9]+/", replace = "darn/{{version}}/", min = 0 },
-  { file = "README.md", search = "darn:[0-9]+\\.[0-9]+\\.[0-9]+", replace = "darn:{{version}}", min = 0 },
   { file = "README.md", search = "darn-[0-9]+\\.[0-9]+\\.[0-9]+-", replace = "darn-{{version}}-", min = 0 },
 ]

@@ -13,7 +13,7 @@
 # resulting binary into ~/.cargo/bin/darn (same PATH entry as cargo itself).
 #
 # Pass --musl to also set up the fully static x86_64-unknown-linux-musl build
-# used for the release tarballs and the container image.
+# used for the release tarball.
 #
 # Every step checks before acting, so this is safe to re-run.
 
