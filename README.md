@@ -171,5 +171,5 @@ Licensed under the Apache License, Version 2.0. See [LICENSE.txt](LICENSE.txt).
 
 ![Cloudsmith badge](https://img.shields.io/badge/OSS%20hosting%20by-cloudsmith-blue?logo=cloudsmith&style=flat-square&link=https%3A%2F%2Fcloudsmith.com)
 
-Thanks to [Cloudsmith](https://cloudsmith.com) for taking care of free package 
-repository hosting.
+Thanks to [Cloudsmith](https://cloudsmith.com) for taking care of package repository 
+hosting for free.
