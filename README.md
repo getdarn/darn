@@ -42,9 +42,9 @@ sudo dnf install darn
 ### Static tarball
 
 ```sh
-curl -LO https://github.com/getdarn/darn/releases/latest/download/darn-0.3.1-x86_64-linux-musl.tar.gz
-tar xzf darn-0.3.1-x86_64-linux-musl.tar.gz
-sudo install -m755 darn-0.3.1-x86_64-linux-musl/darn /usr/local/bin/darn
+curl -LO https://github.com/getdarn/darn/releases/latest/download/darn-0.3.2-x86_64-linux-musl.tar.gz
+tar xzf darn-0.3.2-x86_64-linux-musl.tar.gz
+sudo install -m755 darn-0.3.2-x86_64-linux-musl/darn /usr/local/bin/darn
 ```
 
 Every release also ships `SHA256SUMS` and build provenance attestations, so a
